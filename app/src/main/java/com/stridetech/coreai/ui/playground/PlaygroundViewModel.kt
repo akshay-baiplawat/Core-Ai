@@ -7,8 +7,10 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import android.os.RemoteException
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +23,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import javax.inject.Inject
 
+private const val TAG = "PlaygroundViewModel"
 private const val BIND_ACTION = "com.stridetech.coreai.BIND_LLM_SERVICE"
 private const val SERVICE_CLASS = "com.stridetech.coreai.service.CoreAiService"
 
@@ -30,6 +33,7 @@ data class PlaygroundUiState(
     val latencyMs: Long = 0L,
     val isServiceBound: Boolean = false,
     val isLoading: Boolean = false,
+    val activeModelName: String? = null,
     val error: String? = null
 )
 
@@ -43,15 +47,28 @@ class PlaygroundViewModel @Inject constructor(
 
     private var coreAiService: ICoreAiInterface? = null
 
+    private val modelCallback = object : ICoreAiCallback.Stub() {
+        override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {
+            _uiState.update { it.copy(activeModelName = activeModelName?.takeIf { name -> name.isNotEmpty() }) }
+        }
+
+        override fun onError(errorMessage: String?) {
+            _uiState.update { it.copy(activeModelName = null) }
+        }
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-            coreAiService = ICoreAiInterface.Stub.asInterface(binder)
+            val service = ICoreAiInterface.Stub.asInterface(binder)
+            coreAiService = service
             _uiState.update { it.copy(isServiceBound = true) }
+            runCatching { service.registerCallback(modelCallback) }
+                .onFailure { Log.w(TAG, "registerCallback failed: ${it.message}") }
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
             coreAiService = null
-            _uiState.update { it.copy(isServiceBound = false) }
+            _uiState.update { it.copy(isServiceBound = false, activeModelName = null) }
         }
     }
 
@@ -117,6 +134,8 @@ class PlaygroundViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        runCatching { coreAiService?.unregisterCallback(modelCallback) }
+            .onFailure { Log.w(TAG, "unregisterCallback failed: ${it.message}") }
         runCatching { getApplication<Application>().unbindService(serviceConnection) }
         coreAiService = null
         super.onCleared()

@@ -7,6 +7,9 @@
         android:protectionLevel="signature" />
 
     <uses-permission android:name="com.stridetech.coreai.permission.BIND_LLM_SERVICE" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <application
         android:name=".CoreAiApplication"

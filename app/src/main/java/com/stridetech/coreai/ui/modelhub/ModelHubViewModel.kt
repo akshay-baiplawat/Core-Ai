@@ -1,0 +1,225 @@
+package com.stridetech.coreai.ui.modelhub
+
+import android.app.Application
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.net.Uri
+import android.os.IBinder
+import android.provider.OpenableColumns
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.stridetech.coreai.ICoreAiInterface
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import javax.inject.Inject
+
+private const val TAG = "ModelHubViewModel"
+private const val BIND_ACTION = "com.stridetech.coreai.BIND_LLM_SERVICE"
+private const val SERVICE_PKG = "com.stridetech.coreai"
+private const val SERVICE_CLASS = "com.stridetech.coreai.service.CoreAiService"
+private const val MODELS_DIR = "models"
+private val MODEL_EXTENSIONS = setOf("bin", "litertlm")
+
+data class ModelInfo(
+    val fileName: String,
+    val absolutePath: String,
+    val fileSizeBytes: Long,
+    val lastModified: Long,
+    val isLoaded: Boolean,
+    val isActive: Boolean
+)
+
+data class ModelHubUiState(
+    val models: List<ModelInfo> = emptyList(),
+    val isImporting: Boolean = false,
+    val importError: String? = null,
+    val importSuccess: Boolean = false
+)
+
+@HiltViewModel
+class ModelHubViewModel @Inject constructor(
+    application: Application
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(ModelHubUiState())
+    val uiState: StateFlow<ModelHubUiState> = _uiState.asStateFlow()
+
+    private var coreAiService: ICoreAiInterface? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            coreAiService = ICoreAiInterface.Stub.asInterface(binder)
+            refresh()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName) {
+            coreAiService = null
+            refresh()
+        }
+    }
+
+    init {
+        bindToService()
+        refresh()
+    }
+
+    private fun bindToService() {
+        val intent = Intent(BIND_ACTION).apply { setClassName(SERVICE_PKG, SERVICE_CLASS) }
+        runCatching {
+            getApplication<Application>().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        }
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            val models = withContext(Dispatchers.IO) { scanModelsDir() }
+            _uiState.update { it.copy(models = models) }
+        }
+    }
+
+    private fun scanModelsDir(): List<ModelInfo> {
+        val modelsDir = getApplication<Application>().getExternalFilesDir(MODELS_DIR) ?: return emptyList()
+        val service = coreAiService
+        val activeModelName = runCatching { service?.getActiveModelName() }.getOrNull()
+        val loadedNames = runCatching { service?.getLoadedModelNames() }
+            .getOrNull()
+            ?.split(",")
+            ?.filter { it.isNotBlank() }
+            ?.toSet()
+            ?: emptySet()
+
+        return modelsDir.listFiles()
+            ?.filter { it.isFile && it.extension in MODEL_EXTENSIONS }
+            ?.sortedByDescending { it.lastModified() }
+            ?.map { file ->
+                val nameWithoutExt = file.nameWithoutExtension
+                ModelInfo(
+                    fileName = file.name,
+                    absolutePath = file.absolutePath,
+                    fileSizeBytes = file.length(),
+                    lastModified = file.lastModified(),
+                    isLoaded = nameWithoutExt in loadedNames,
+                    isActive = nameWithoutExt == activeModelName
+                )
+            }
+            ?: emptyList()
+    }
+
+    fun onModelPicked(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isImporting = true, importError = null, importSuccess = false) }
+            val result = withContext(Dispatchers.IO) { copyModelFromUri(uri) }
+            result.fold(
+                onSuccess = {
+                    refresh()
+                    _uiState.update { it.copy(isImporting = false, importSuccess = true) }
+                },
+                onFailure = { ex ->
+                    Log.e(TAG, "Import failed", ex)
+                    _uiState.update {
+                        it.copy(isImporting = false, importError = ex.message ?: "Import failed")
+                    }
+                }
+            )
+        }
+    }
+
+    fun loadModel(model: ModelInfo) {
+        viewModelScope.launch {
+            runCatching { coreAiService?.loadModel(model.absolutePath) }
+                .onFailure { Log.e(TAG, "loadModel failed", it) }
+            pollUntil(model.fileName) { m -> m.isLoaded }
+        }
+    }
+
+    fun unloadModel(model: ModelInfo) {
+        viewModelScope.launch {
+            runCatching { coreAiService?.unloadModel(model.absolutePath) }
+                .onFailure { Log.e(TAG, "unloadModel failed", it) }
+            pollUntil(model.fileName) { m -> !m.isLoaded }
+        }
+    }
+
+    fun setActiveModel(model: ModelInfo) {
+        viewModelScope.launch {
+            runCatching { coreAiService?.setActiveModel(model.absolutePath) }
+                .onFailure { Log.e(TAG, "setActiveModel failed", it) }
+            pollUntil(model.fileName) { m -> m.isActive }
+        }
+    }
+
+    fun deleteModel(model: ModelInfo) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                if (model.isLoaded) {
+                    runCatching { coreAiService?.unloadModel(model.absolutePath) }
+                }
+                runCatching { File(model.absolutePath).delete() }
+                    .onFailure { Log.e(TAG, "Delete failed: ${model.absolutePath}", it) }
+            }
+            refresh()
+        }
+    }
+
+    private suspend fun pollUntil(fileName: String, predicate: (ModelInfo) -> Boolean) {
+        repeat(10) {
+            delay(500)
+            val models = withContext(Dispatchers.IO) { scanModelsDir() }
+            _uiState.update { it.copy(models = models) }
+            if (models.any { m -> m.fileName == fileName && predicate(m) }) return
+        }
+    }
+
+    private fun copyModelFromUri(uri: Uri): Result<Unit> = runCatching {
+        val app = getApplication<Application>()
+        val displayName = resolveDisplayName(uri) ?: "model.bin"
+
+        val modelsDir = requireNotNull(app.getExternalFilesDir(MODELS_DIR)) {
+            "External storage is not available"
+        }
+        if (!modelsDir.exists()) modelsDir.mkdirs()
+
+        val destFile = File(modelsDir, displayName)
+        if (destFile.exists()) destFile.delete()
+
+        app.contentResolver.openInputStream(uri)?.use { input ->
+            destFile.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("Could not open input stream for selected file")
+
+        Log.i(TAG, "Model copied to ${destFile.absolutePath} (${destFile.length()} bytes)")
+    }
+
+    private fun resolveDisplayName(uri: Uri): String? {
+        val cursor = getApplication<Application>().contentResolver.query(
+            uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+        ) ?: return null
+        return cursor.use { if (it.moveToFirst()) it.getString(0) else null }
+    }
+
+    fun dismissError() {
+        _uiState.update { it.copy(importError = null) }
+    }
+
+    fun dismissSuccess() {
+        _uiState.update { it.copy(importSuccess = false) }
+    }
+
+    override fun onCleared() {
+        if (coreAiService != null) {
+            runCatching { getApplication<Application>().unbindService(serviceConnection) }
+            coreAiService = null
+        }
+        super.onCleared()
+    }
+}

@@ -3,78 +3,55 @@ package com.stridetech.coreai.ml
 import android.content.Context
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.ConversationConfig
-import com.google.ai.edge.litertlm.Engine
-import com.google.ai.edge.litertlm.EngineConfig
-import com.google.ai.edge.litertlm.SamplerConfig
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.withContext
 
 private const val TAG = "LlmEngine"
-private const val MAX_TOKENS = 1024
-private const val TEMPERATURE = 0.8
-private const val TOP_K = 40
-private const val TOP_P = 0.95
 
 class LlmEngine(private val context: Context) {
 
-    @Volatile private var engine: Engine? = null
-    @Volatile private var modelName: String? = null
-    @Volatile private var loadError: String? = null
+    private val engines = mutableMapOf<String, ModelEngine>()
 
-    val isReady: Boolean get() = engine != null
-    val lastLoadError: String? get() = loadError
+    @Volatile private var activeKey: String? = null
 
-    fun activeModelName(): String? = modelName
+    val isReady: Boolean get() = activeEngine?.isReady == true
+    val lastLoadError: String? get() = activeEngine?.lastLoadError
 
-    suspend fun load(modelPath: String, backend: Backend = Backend.CPU()) = withContext(Dispatchers.IO) {
-        loadError = null
-        close()
-        Log.d(TAG, "Attempting to load model: $modelPath with backend: ${backend::class.java.simpleName}")
-        try {
-            val config = EngineConfig(
-                modelPath = modelPath,
-                backend = backend,
-                maxNumTokens = MAX_TOKENS,
-                cacheDir = context.cacheDir.path
-            )
-            val newEngine = Engine(config)
-            newEngine.initialize()
-            engine = newEngine
-            modelName = modelPath.substringAfterLast('/').substringBeforeLast('.')
-            Log.i(TAG, "Model loaded OK: $modelName (backend=${backend::class.java.simpleName})")
-        } catch (ex: Exception) {
-            val detail = "${ex::class.java.name}: ${ex.message ?: "(no message)"}"
-            loadError = detail
-            Log.e(TAG, "Model load FAILED — $detail", ex)
-            throw ex
-        }
+    private val activeEngine: ModelEngine? get() = activeKey?.let { engines[it] }
+
+    fun activeModelName(): String? = activeKey
+
+    fun loadedModelNames(): List<String> = engines.keys.toList()
+
+    suspend fun load(modelPath: String, backend: Backend) {
+        val key = modelPath.substringAfterLast('/').substringBeforeLast('.')
+        val engine = ModelEngineFactory.create(modelPath, context)
+        engine.load(modelPath, backend)
+        engines[key]?.close()
+        engines[key] = engine
+        if (activeKey == null) activeKey = key
     }
 
-    suspend fun runInference(prompt: String): String = withContext(Dispatchers.IO) {
-        val e = requireNotNull(engine) { "LlmEngine is not loaded. Call load() first." }
+    fun unload(modelPath: String) {
+        val key = modelPath.substringAfterLast('/').substringBeforeLast('.')
+        engines.remove(key)?.close()
+        if (activeKey == key) activeKey = engines.keys.firstOrNull()
+        Log.i(TAG, "Unloaded model: $key. Active: $activeKey")
+    }
 
-        val conversationConfig = ConversationConfig(
-            samplerConfig = SamplerConfig(
-                topK = TOP_K,
-                topP = TOP_P,
-                temperature = TEMPERATURE
-            )
-        )
+    fun setActive(modelPath: String) {
+        val key = modelPath.substringAfterLast('/').substringBeforeLast('.')
+        require(engines.containsKey(key)) { "Model '$key' is not loaded. Call load() first." }
+        activeKey = key
+        Log.i(TAG, "Active model set to: $key")
+    }
 
-        e.createConversation(conversationConfig).use { conversation ->
-            val chunks = conversation.sendMessageAsync(prompt)
-                .catch { ex -> throw ex }
-                .toList()
-            chunks.joinToString("")
-        }
+    suspend fun runInference(prompt: String): String {
+        val engine = requireNotNull(activeEngine) { "No active model. Load and set a model first." }
+        return engine.runInference(prompt)
     }
 
     fun close() {
-        engine?.close()
-        engine = null
-        modelName = null
+        engines.values.forEach { it.close() }
+        engines.clear()
+        activeKey = null
     }
 }

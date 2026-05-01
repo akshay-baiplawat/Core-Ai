@@ -1,5 +1,7 @@
 package com.stridetech.coreai;
 
+import com.stridetech.coreai.ICoreAiCallback;
+
 /**
  * Core AI Inter-Process Communication Interface
  *
@@ -39,4 +41,44 @@ interface ICoreAiInterface {
      * @return true if valid, false otherwise
      */
     boolean validateApiKey(String apiKey);
+
+    /** Reload the model from disk. Call after importing a new model file. */
+    void reloadModel();
+
+    /**
+     * Load a specific model into memory by absolute path.
+     * Multiple models can be loaded simultaneously; use setActiveModel to switch inference target.
+     *
+     * @param modelPath absolute path to the model file
+     */
+    void loadModel(String modelPath);
+
+    /**
+     * Unload a specific model from memory to free RAM.
+     * If the unloaded model was active, inference will return an error until a new active model is set.
+     *
+     * @param modelPath absolute path to the model file
+     */
+    void unloadModel(String modelPath);
+
+    /**
+     * Set which loaded model to use for inference.
+     * The model must already be loaded via loadModel() before calling this.
+     *
+     * @param modelPath absolute path of the model to make active
+     */
+    void setActiveModel(String modelPath);
+
+    /**
+     * Get the names of all models currently loaded in memory.
+     *
+     * @return comma-separated list of loaded model names, or empty string if none
+     */
+    String getLoadedModelNames();
+
+    /** Register a callback to receive model state change notifications. */
+    void registerCallback(ICoreAiCallback callback);
+
+    /** Unregister a previously registered callback. */
+    void unregisterCallback(ICoreAiCallback callback);
 }
