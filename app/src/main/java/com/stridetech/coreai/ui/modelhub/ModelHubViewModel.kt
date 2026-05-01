@@ -11,10 +11,10 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,7 +44,8 @@ data class ModelHubUiState(
     val models: List<ModelInfo> = emptyList(),
     val isImporting: Boolean = false,
     val importError: String? = null,
-    val importSuccess: Boolean = false
+    val importSuccess: Boolean = false,
+    val serviceError: String? = null
 )
 
 @HiltViewModel
@@ -57,9 +58,22 @@ class ModelHubViewModel @Inject constructor(
 
     private var coreAiService: ICoreAiInterface? = null
 
+    private val modelCallback = object : ICoreAiCallback.Stub() {
+        override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {
+            refresh()
+        }
+
+        override fun onError(errorMessage: String?) {
+            _uiState.update { it.copy(serviceError = errorMessage) }
+        }
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-            coreAiService = ICoreAiInterface.Stub.asInterface(binder)
+            val service = ICoreAiInterface.Stub.asInterface(binder)
+            coreAiService = service
+            runCatching { service.registerCallback(modelCallback) }
+                .onFailure { Log.w(TAG, "registerCallback failed: ${it.message}") }
             refresh()
         }
 
@@ -139,7 +153,6 @@ class ModelHubViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { coreAiService?.loadModel(model.absolutePath) }
                 .onFailure { Log.e(TAG, "loadModel failed", it) }
-            pollUntil(model.fileName) { m -> m.isLoaded }
         }
     }
 
@@ -147,7 +160,6 @@ class ModelHubViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { coreAiService?.unloadModel(model.absolutePath) }
                 .onFailure { Log.e(TAG, "unloadModel failed", it) }
-            pollUntil(model.fileName) { m -> !m.isLoaded }
         }
     }
 
@@ -155,7 +167,6 @@ class ModelHubViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { coreAiService?.setActiveModel(model.absolutePath) }
                 .onFailure { Log.e(TAG, "setActiveModel failed", it) }
-            pollUntil(model.fileName) { m -> m.isActive }
         }
     }
 
@@ -169,15 +180,6 @@ class ModelHubViewModel @Inject constructor(
                     .onFailure { Log.e(TAG, "Delete failed: ${model.absolutePath}", it) }
             }
             refresh()
-        }
-    }
-
-    private suspend fun pollUntil(fileName: String, predicate: (ModelInfo) -> Boolean) {
-        repeat(10) {
-            delay(500)
-            val models = withContext(Dispatchers.IO) { scanModelsDir() }
-            _uiState.update { it.copy(models = models) }
-            if (models.any { m -> m.fileName == fileName && predicate(m) }) return
         }
     }
 
@@ -216,6 +218,8 @@ class ModelHubViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        runCatching { coreAiService?.unregisterCallback(modelCallback) }
+            .onFailure { Log.w(TAG, "unregisterCallback failed: ${it.message}") }
         if (coreAiService != null) {
             runCatching { getApplication<Application>().unbindService(serviceConnection) }
             coreAiService = null
