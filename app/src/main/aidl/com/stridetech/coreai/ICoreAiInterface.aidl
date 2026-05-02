@@ -1,84 +1,70 @@
 package com.stridetech.coreai;
 
+import android.net.Uri;
 import com.stridetech.coreai.ICoreAiCallback;
 
-/**
- * Core AI Inter-Process Communication Interface
- *
- * Defines the AIDL contract for third-party applications to communicate
- * with the Core AI inference engine for on-device LLM inference.
- */
 interface ICoreAiInterface {
+
+    // ── Inference ────────────────────────────────────────────────────────────
+
     /**
-     * Run inference with the currently active model.
-     *
-     * @param apiKey API key for authentication
-     * @param prompt Input text prompt for the LLM
-     * @return JSON response containing completion text and metadata
-     *         Format: {"completion": "...", "latency_ms": 1234, "success": true, "error": null}
-     *         On error: {"completion": null, "latency_ms": 0, "success": false, "error": "error message"}
+     * Run inference against the active model. Returns immediately with a pending
+     * JSON envelope; the real result arrives via ICoreAiCallback#onInferenceResult.
+     * Format: {"completion":null,"latency_ms":0,"success":true,"pending":true,"error":null}
      */
     String runInference(String apiKey, String prompt);
 
-    /**
-     * Check if the inference engine is ready (model loaded).
-     *
-     * @return true if model is loaded and ready, false otherwise
-     */
     boolean isReady();
-
-    /**
-     * Get the name of the currently active model.
-     *
-     * @return Model name (e.g. "Gemma 2B") or null if no model loaded
-     */
-    String getActiveModelName();
-
-    /**
-     * Validate an API key without running inference.
-     *
-     * @param apiKey API key to validate
-     * @return true if valid, false otherwise
-     */
     boolean validateApiKey(String apiKey);
 
-    /** Reload the model from disk. Call after importing a new model file. */
-    void reloadModel();
+    // ── Model lifecycle ───────────────────────────────────────────────────────
 
     /**
-     * Load a specific model into memory by absolute path.
-     * Multiple models can be loaded simultaneously; use setActiveModel to switch inference target.
-     *
-     * @param modelPath absolute path to the model file
+     * Load a model by ID from the local models directory.
+     * No-op (fires onModelStateChanged immediately) when the model is already active.
+     * Unloads the current model first if a different one is in memory.
+     * Result delivered via onModelStateChanged or onError on the supplied callback.
      */
-    void loadModel(String modelPath);
+    void loadModel(String apiKey, String modelId, ICoreAiCallback callback);
 
     /**
-     * Unload a specific model from memory to free RAM.
-     * If the unloaded model was active, inference will return an error until a new active model is set.
-     *
-     * @param modelPath absolute path to the model file
+     * Unload a model from memory by ID.
+     * Result delivered via onModelStateChanged or onError on the supplied callback.
      */
-    void unloadModel(String modelPath);
+    void unloadModel(String apiKey, String modelId, ICoreAiCallback callback);
+
+    /** Promote an already-loaded model to the active inference slot. */
+    void setActiveModel(String apiKey, String modelId);
+
+    // ── Catalog / transfer ────────────────────────────────────────────────────
 
     /**
-     * Set which loaded model to use for inference.
-     * The model must already be loaded via loadModel() before calling this.
-     *
-     * @param modelPath absolute path of the model to make active
+     * Download a model from a URL into the local models directory.
+     * Fires onModelTransferComplete immediately (cache hit) if the file already
+     * exists. Progress reported via onModelTransferProgress (0–100).
      */
-    void setActiveModel(String modelPath);
+    void downloadCatalogModel(String apiKey, String modelId, String downloadUrl, ICoreAiCallback callback);
 
     /**
-     * Get the names of all models currently loaded in memory.
-     *
-     * @return comma-separated list of loaded model names, or empty string if none
+     * Import a model from a content URI (e.g. Storage Access Framework picker).
+     * Streams bytes to a .tmp file, then atomically renames on success.
+     * engineType hint: "litertlm" | "gguf" — resolves the output file extension.
      */
-    String getLoadedModelNames();
+    void importLocalModel(String apiKey, in Uri uri, String targetModelId, String engineType, ICoreAiCallback callback);
 
-    /** Register a callback to receive model state change notifications. */
+    // ── State queries (JSON strings) ──────────────────────────────────────────
+
+    /** Returns {"modelId":"...","isReady":true} or {"modelId":null,"isReady":false}. */
+    String getActiveModel(String apiKey);
+
+    /** Returns {"models":[{"modelId":"...","path":"...","sizeBytes":0}],"error":null}. */
+    String getDownloadedModels(String apiKey);
+
+    /** Returns {"models":["modelId1","modelId2"],"error":null}. */
+    String getLoadedModels(String apiKey);
+
+    // ── Callback registration ─────────────────────────────────────────────────
+
     void registerCallback(ICoreAiCallback callback);
-
-    /** Unregister a previously registered callback. */
     void unregisterCallback(ICoreAiCallback callback);
 }

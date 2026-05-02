@@ -17,6 +17,7 @@ import com.stridetech.coreai.hub.DownloadStatus
 import com.stridetech.coreai.hub.ModelApiService
 import com.stridetech.coreai.hub.ModelCatalogItem
 import com.stridetech.coreai.hub.ModelDownloader
+import com.stridetech.coreai.security.ApiKeyManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,7 +61,8 @@ data class ModelHubUiState(
 class ModelHubViewModel @Inject constructor(
     application: Application,
     private val modelApiService: ModelApiService,
-    private val modelDownloader: ModelDownloader
+    private val modelDownloader: ModelDownloader,
+    private val apiKeyManager: ApiKeyManager
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(ModelHubUiState())
@@ -77,8 +79,12 @@ class ModelHubViewModel @Inject constructor(
             _uiState.update { it.copy(serviceError = errorMessage) }
         }
 
-        override fun onInferenceResult(resultJson: String?) {
-            // ModelHub does not consume inference results
+        override fun onInferenceResult(resultJson: String?) {}
+
+        override fun onModelTransferProgress(modelId: String?, percent: Int) {}
+        override fun onModelTransferComplete(modelId: String?, filePath: String?) { refresh() }
+        override fun onModelTransferError(modelId: String?, errorMessage: String?) {
+            _uiState.update { it.copy(serviceError = errorMessage) }
         }
     }
 
@@ -120,26 +126,33 @@ class ModelHubViewModel @Inject constructor(
     private fun scanModelsDir(): List<ModelInfo> {
         val modelsDir = getApplication<Application>().getExternalFilesDir(MODELS_DIR) ?: return emptyList()
         val service = coreAiService
-        val activeModelName = runCatching { service?.getActiveModelName() }.getOrNull()
-        val loadedNames = runCatching { service?.getLoadedModelNames() }
-            .getOrNull()
-            ?.split(",")
-            ?.filter { it.isNotBlank() }
-            ?.toSet()
-            ?: emptySet()
+        val apiKey = apiKeyManager.getExistingKeys().firstOrNull() ?: return emptyList()
+
+        val activeModelId = runCatching {
+            service?.getActiveModel(apiKey)?.let { json ->
+                org.json.JSONObject(json).optString("modelId", "").takeIf { it.isNotEmpty() }
+            }
+        }.getOrNull()
+
+        val loadedIds = runCatching {
+            service?.getLoadedModels(apiKey)?.let { json ->
+                val arr = org.json.JSONObject(json).optJSONArray("models")
+                (0 until (arr?.length() ?: 0)).mapNotNull { arr?.optString(it) }.toSet()
+            }
+        }.getOrNull() ?: emptySet()
 
         return modelsDir.listFiles()
             ?.filter { it.isFile && it.extension in MODEL_EXTENSIONS }
             ?.sortedByDescending { it.lastModified() }
             ?.map { file ->
-                val nameWithoutExt = file.nameWithoutExtension
+                val id = file.nameWithoutExtension
                 ModelInfo(
                     fileName = file.name,
                     absolutePath = file.absolutePath,
                     fileSizeBytes = file.length(),
                     lastModified = file.lastModified(),
-                    isLoaded = nameWithoutExt in loadedNames,
-                    isActive = nameWithoutExt == activeModelName
+                    isLoaded = id in loadedIds,
+                    isActive = id == activeModelId
                 )
             }
             ?: emptyList()
@@ -165,31 +178,35 @@ class ModelHubViewModel @Inject constructor(
     }
 
     fun loadModel(model: ModelInfo) {
+        val apiKey = apiKeyManager.getExistingKeys().firstOrNull() ?: return
         viewModelScope.launch {
-            runCatching { coreAiService?.loadModel(model.absolutePath) }
+            runCatching { coreAiService?.loadModel(apiKey, model.fileName.substringBeforeLast('.'), modelCallback) }
                 .onFailure { Log.e(TAG, "loadModel failed", it) }
         }
     }
 
     fun unloadModel(model: ModelInfo) {
+        val apiKey = apiKeyManager.getExistingKeys().firstOrNull() ?: return
         viewModelScope.launch {
-            runCatching { coreAiService?.unloadModel(model.absolutePath) }
+            runCatching { coreAiService?.unloadModel(apiKey, model.fileName.substringBeforeLast('.'), modelCallback) }
                 .onFailure { Log.e(TAG, "unloadModel failed", it) }
         }
     }
 
     fun setActiveModel(model: ModelInfo) {
+        val apiKey = apiKeyManager.getExistingKeys().firstOrNull() ?: return
         viewModelScope.launch {
-            runCatching { coreAiService?.setActiveModel(model.absolutePath) }
+            runCatching { coreAiService?.setActiveModel(apiKey, model.fileName.substringBeforeLast('.')) }
                 .onFailure { Log.e(TAG, "setActiveModel failed", it) }
         }
     }
 
     fun deleteModel(model: ModelInfo) {
+        val apiKey = apiKeyManager.getExistingKeys().firstOrNull() ?: return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 if (model.isLoaded) {
-                    runCatching { coreAiService?.unloadModel(model.absolutePath) }
+                    runCatching { coreAiService?.unloadModel(apiKey, model.fileName.substringBeforeLast('.'), modelCallback) }
                 }
                 runCatching { File(model.absolutePath).delete() }
                     .onFailure { Log.e(TAG, "Delete failed: ${model.absolutePath}", it) }

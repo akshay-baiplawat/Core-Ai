@@ -6,6 +6,7 @@ import android.content.ServiceConnection
 import com.stridetech.coreai.ICoreAiInterface
 import com.stridetech.coreai.hub.ModelApiService
 import com.stridetech.coreai.hub.ModelDownloader
+import com.stridetech.coreai.security.ApiKeyManager
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkConstructor
@@ -36,6 +37,11 @@ class ModelHubViewModelTest {
     private lateinit var testDispatcher: TestDispatcher
     private lateinit var viewModel: ModelHubViewModel
     private lateinit var mockService: ICoreAiInterface
+    private lateinit var mockApiKeyManager: ApiKeyManager
+
+    companion object {
+        private const val VALID_KEY = "test-api-key"
+    }
 
     @Before
     fun setUp() {
@@ -48,11 +54,14 @@ class ModelHubViewModelTest {
         mockkConstructor(Intent::class)
         every { anyConstructed<Intent>().setClassName(any<String>(), any<String>()) } returns mockk(relaxed = true)
 
+        mockApiKeyManager = mockk(relaxed = true)
+        every { mockApiKeyManager.getExistingKeys() } returns listOf(VALID_KEY)
+
         val fakeApp = mockk<Application>(relaxed = true)
         every { fakeApp.bindService(any<Intent>(), any<ServiceConnection>(), any<Int>()) } returns false
         every { fakeApp.getExternalFilesDir(any()) } returns null
 
-        viewModel = ModelHubViewModel(fakeApp, mockk(relaxed = true), mockk(relaxed = true))
+        viewModel = ModelHubViewModel(fakeApp, mockk(relaxed = true), mockk(relaxed = true), mockApiKeyManager)
         mockService = mockk(relaxed = true)
         injectService(viewModel, mockService)
     }
@@ -69,13 +78,11 @@ class ModelHubViewModelTest {
     @Test
     fun `loadModel calls service loadModel with correct path`() = runTest(testDispatcher) {
         val model = fakeModel("gemma.litertlm", "/ext/models/gemma.litertlm")
-        every { mockService.getActiveModelName() } returns null
-        every { mockService.getLoadedModelNames() } returns ""
 
         viewModel.loadModel(model)
         advanceUntilIdle()
 
-        verify(exactly = 1) { mockService.loadModel("/ext/models/gemma.litertlm") }
+        verify(exactly = 1) { mockService.loadModel(VALID_KEY, "gemma", any()) }
     }
 
     @Test
@@ -93,13 +100,11 @@ class ModelHubViewModelTest {
     @Test
     fun `unloadModel calls service unloadModel with correct path`() = runTest(testDispatcher) {
         val model = fakeModel("gemma.litertlm", "/ext/models/gemma.litertlm", isLoaded = true)
-        every { mockService.getActiveModelName() } returns null
-        every { mockService.getLoadedModelNames() } returns ""
 
         viewModel.unloadModel(model)
         advanceUntilIdle()
 
-        verify(exactly = 1) { mockService.unloadModel("/ext/models/gemma.litertlm") }
+        verify(exactly = 1) { mockService.unloadModel(VALID_KEY, "gemma", any()) }
     }
 
     @Test
@@ -117,13 +122,11 @@ class ModelHubViewModelTest {
     @Test
     fun `setActiveModel calls service setActiveModel with correct path`() = runTest(testDispatcher) {
         val model = fakeModel("gemma.litertlm", "/ext/models/gemma.litertlm", isLoaded = true)
-        every { mockService.getActiveModelName() } returns null
-        every { mockService.getLoadedModelNames() } returns ""
 
         viewModel.setActiveModel(model)
         advanceUntilIdle()
 
-        verify(exactly = 1) { mockService.setActiveModel("/ext/models/gemma.litertlm") }
+        verify(exactly = 1) { mockService.setActiveModel(VALID_KEY, "gemma") }
     }
 
     @Test
@@ -145,7 +148,7 @@ class ModelHubViewModelTest {
         viewModel.deleteModel(model)
         advanceUntilIdle()
 
-        verify(exactly = 1) { mockService.unloadModel("/ext/models/gemma.litertlm") }
+        verify(exactly = 1) { mockService.unloadModel(VALID_KEY, "gemma", any()) }
     }
 
     @Test
@@ -155,7 +158,7 @@ class ModelHubViewModelTest {
         viewModel.deleteModel(model)
         advanceUntilIdle()
 
-        verify(exactly = 0) { mockService.unloadModel(any()) }
+        verify(exactly = 0) { mockService.unloadModel(any(), any(), any()) }
     }
 
     // ── ModelInfo state mapping ────────────────────────────────────────────────

@@ -65,6 +65,10 @@ class PlaygroundViewModel @Inject constructor(
         override fun onInferenceResult(resultJson: String?) {
             parseAndApply(resultJson ?: "")
         }
+
+        override fun onModelTransferProgress(modelId: String?, percent: Int) {}
+        override fun onModelTransferComplete(modelId: String?, filePath: String?) {}
+        override fun onModelTransferError(modelId: String?, errorMessage: String?) {}
     }
 
     private val serviceConnection = object : ServiceConnection {
