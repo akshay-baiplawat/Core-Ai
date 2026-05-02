@@ -14,6 +14,7 @@ import io.mockk.mockkStatic
 import io.mockk.runs
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertFalse
@@ -24,6 +25,7 @@ import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -317,6 +319,78 @@ class CoreAiServiceTest {
         // Wait for async inference to complete and deliver via onInferenceResult callback
         assertTrue("Inference callback not delivered within timeout", latch.await(5, TimeUnit.SECONDS))
         coVerify(exactly = 1) { mockEngine.runInference("Ping") }
+    }
+
+    // ── EngineLock concurrency ────────────────────────────────────────────────
+
+    /**
+     * Mathematically proves the EngineLock contract in three phases:
+     *
+     * Phase 1 (Rejection): Coroutine A acquires the lock and begins a 200 ms load on
+     *   Dispatchers.IO. While the lock is held, Coroutine B immediately hits
+     *   tryAcquireLock → CAS(false→true) fails → callbackB.onError is called.
+     *
+     * Phase 2 (Success): A's finally block runs releaseLock(). We assert
+     *   callbackA.onModelStateChanged was invoked and isEngineLocked == false.
+     *
+     * Phase 3 (Release proof): Coroutine C successfully loads the same model,
+     *   confirming the AtomicBoolean was reset to false and the lock is reusable.
+     */
+    @Test
+    fun verifyEngineLockRejectsConcurrentRequests() = runTest {
+        // ── Arrange ────────────────────────────────────────────────────────────
+        File(tempModelsDir, "gemma-2b.bin").createNewFile()
+
+        val callbackA = mockk<ICoreAiCallback>(relaxed = true)
+        val callbackB = mockk<ICoreAiCallback>(relaxed = true)
+        val callbackC = mockk<ICoreAiCallback>(relaxed = true)
+
+        every { mockEngine.isReady } returns true
+        every { mockEngine.activeModelName() } returns null
+
+        // A's load sleeps on the IO thread — keeps the lock held long enough
+        // for the test thread to call loadModel() a second time while A is running.
+        coEvery { mockEngine.load(any(), any()) } coAnswers { Thread.sleep(200) }
+
+        val latchA = CountDownLatch(1)
+        every { callbackA.onModelStateChanged(any(), any()) } answers { latchA.countDown() }
+
+        val binder = getField(service, "binder") as com.stridetech.coreai.ICoreAiInterface.Stub
+
+        // ── Phase 1: Rejection ─────────────────────────────────────────────────
+        // A acquires the lock synchronously via CAS, then launches work on Dispatchers.IO.
+        binder.loadModel(VALID_KEY, "gemma-2b", callbackA)
+
+        // B is called on the same thread before A's IO coroutine can finish.
+        // tryAcquireLock returns false → onError is fired immediately.
+        binder.loadModel(VALID_KEY, "llama-3", callbackB)
+
+        verify(exactly = 1) {
+            callbackB.onError(match { "locked" in it.lowercase() || "active process" in it.lowercase() })
+        }
+        verify(exactly = 0) { callbackB.onModelStateChanged(any(), any()) }
+
+        // ── Phase 2: Success + release ─────────────────────────────────────────
+        assertTrue("Coroutine A did not complete within timeout", latchA.await(5, TimeUnit.SECONDS))
+
+        verify(exactly = 1) { callbackA.onModelStateChanged(true, any()) }
+        verify(exactly = 0) { callbackA.onError(any()) }
+
+        val isEngineLocked = (getField(service, "isEngineLocked") as AtomicBoolean).get()
+        assertFalse("isEngineLocked must be false after Coroutine A's finally block runs", isEngineLocked)
+
+        // ── Phase 3: Lock reusability ──────────────────────────────────────────
+        // C should succeed now that the lock is free, proving releaseLock() was called.
+        coEvery { mockEngine.load(any(), any()) } coAnswers { /* instant */ }
+
+        val latchC = CountDownLatch(1)
+        every { callbackC.onModelStateChanged(any(), any()) } answers { latchC.countDown() }
+
+        binder.loadModel(VALID_KEY, "gemma-2b", callbackC)
+
+        assertTrue("Coroutine C did not complete within timeout", latchC.await(5, TimeUnit.SECONDS))
+        verify(exactly = 1) { callbackC.onModelStateChanged(true, any()) }
+        verify(exactly = 0) { callbackC.onError(any()) }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

@@ -209,6 +209,20 @@ private val myCallback = object : ICoreAiCallback.Stub() {
         val latencyMs  = json.optLong("latency_ms")
         // Update UI with completion text
     }
+
+    // ── Transfer progress callbacks ────────────────────────────────────
+
+    override fun onModelTransferProgress(modelId: String?, percent: Int) {
+        // Update a progress bar: 0–100
+    }
+
+    override fun onModelTransferComplete(modelId: String?, filePath: String?) {
+        // File is written to disk and ready to load into RAM via loadModel()
+    }
+
+    override fun onModelTransferError(modelId: String?, errorMessage: String?) {
+        // Show download/import error to user
+    }
 }
 
 // 2. Run inference (call from a coroutine / background thread)
@@ -221,6 +235,135 @@ fun runPrompt(apiKey: String, prompt: String) {
         // Parse resultJson or wait for onInferenceResult callback
     }
 }"""
+            )
+        }
+
+        DocStep(number = 5, title = "Querying Engine State") {
+            Text(
+                text = "Use the JSON state query methods to inspect what is active and what is available " +
+                    "on the device. All three methods return a JSON string synchronously.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "Kotlin — State queries",
+                code = """// Active model — returns immediately
+val activeJson = coreAi.getActiveModel(apiKey)
+// { "modelId": "gemma-2b", "isReady": true }
+// { "modelId": null,       "isReady": false }  ← nothing loaded
+
+// Models stored on disk
+val downloadedJson = coreAi.getDownloadedModels(apiKey)
+// {
+//   "models": [
+//     { "modelId": "gemma-2b", "path": "/data/.../gemma-2b.bin", "sizeBytes": 1500000000 }
+//   ],
+//   "error": null
+// }
+
+// Models currently held in RAM (loaded but not necessarily active)
+val loadedJson = coreAi.getLoadedModels(apiKey)
+// { "models": ["gemma-2b", "phi-2"], "error": null }"""
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Validate API key",
+                code = """// Returns true if the key is recognised by the engine, false otherwise.
+// Call this on startup or before the first inference to give the user
+// early feedback rather than a silent failure later.
+val isValid: Boolean = coreAi.validateApiKey(apiKey)
+if (!isValid) {
+    // Prompt user to check / re-enter their key in Core AI Settings
+}"""
+            )
+        }
+
+        DocStep(number = 6, title = "Managing Models") {
+            Text(
+                text = "Download official catalog models or import your own GGUF / LiteRT files from " +
+                    "local storage. Both operations report progress via ICoreAiCallback.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Download a catalog model",
+                code = """// Triggers a background download; progress arrives on the callback.
+// Completes immediately (cache hit) if the file already exists on disk.
+// downloadUrl is required — the service does not maintain a built-in URL registry.
+coreAi.downloadCatalogModel(
+    apiKey,
+    "gemma-2b",                                // modelId — used in all subsequent calls
+    "https://example.com/models/gemma-2b.bin", // downloadUrl — direct link to the model file
+    myCallback                                 // receives progress + completion events
+)
+
+// Callback sequence:
+//   onModelTransferProgress("gemma-2b", 0..100)
+//   onModelTransferComplete("gemma-2b", "/data/.../gemma-2b.bin")
+//     → file is on disk; call loadModel() to bring it into RAM"""
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Import a custom local model",
+                code = """// 1. Obtain a content Uri via the system file picker or FileProvider
+val pickModelLauncher = registerForActivityResult(
+    ActivityResultContracts.OpenDocument()
+) { uri: Uri? ->
+    uri ?: return@registerForActivityResult
+    importModel(uri)
+}
+
+// Launch the picker scoped to common model file types
+pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+
+// 2. Call importLocalModel — the service streams the file into its sandbox
+fun importModel(uri: Uri) {
+    coreAi.importLocalModel(
+        apiKey,
+        uri,
+        "my-custom-model", // targetModelId used in subsequent calls
+        "LITERT",           // engineType: "LITERT" or "GGUF"
+        myCallback
+    )
+    // onModelTransferProgress → onModelTransferComplete → loadModel(...)
+}"""
+            )
+        }
+
+        DocStep(number = 7, title = "Engine Lifecycle (RAM Management)") {
+            Text(
+                text = "After a model file is on disk, use the lifecycle methods to control what lives in RAM " +
+                    "and which model handles inference requests.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "Kotlin — loadModel, setActiveModel, unloadModel",
+                code = """// 1. Load a model into RAM (required before inference)
+//    Result delivered via onModelStateChanged or onError on the callback.
+coreAi.loadModel(apiKey, "gemma-2b", myCallback)
+
+// 2. Promote a loaded model to the active inference slot
+//    Use this when multiple models are in RAM and you want to switch
+//    which one handles runInference() calls — no reload needed.
+coreAi.setActiveModel(apiKey, "gemma-2b")
+
+// 3. Unload a model to free RAM
+//    Result delivered via onModelStateChanged or onError on the callback.
+//    The model file remains on disk; call loadModel() again to restore it.
+coreAi.unloadModel(apiKey, "gemma-2b", myCallback)
+
+// Typical flow:
+//   downloadCatalogModel / importLocalModel   ← file lands on disk
+//     → onModelTransferComplete
+//   loadModel                                 ← file enters RAM
+//     → onModelStateChanged(isReady = true)
+//   setActiveModel                            ← routes runInference() here
+//   runInference                              ← produces onInferenceResult
+//   unloadModel                               ← frees RAM when done"""
             )
         }
 
