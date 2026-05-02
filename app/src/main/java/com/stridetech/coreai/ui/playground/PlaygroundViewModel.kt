@@ -29,8 +29,7 @@ private const val SERVICE_CLASS = "com.stridetech.coreai.service.CoreAiService"
 
 data class PlaygroundUiState(
     val prompt: String = "",
-    val output: String = "",
-    val latencyMs: Long = 0L,
+    val messages: List<ChatMessage> = emptyList(),
     val isServiceBound: Boolean = false,
     val isLoading: Boolean = false,
     val activeModelName: String? = null,
@@ -48,8 +47,6 @@ class PlaygroundViewModel @Inject constructor(
 
     private var coreAiService: ICoreAiInterface? = null
 
-    // Stable master key for this app's own inference calls.
-    // Reuses the first existing key or generates one on first launch.
     private val masterApiKey: String by lazy {
         apiKeyManager.getExistingKeys().firstOrNull() ?: apiKeyManager.generateKey()
     }
@@ -103,10 +100,20 @@ class PlaygroundViewModel @Inject constructor(
         val prompt = _uiState.value.prompt.trim()
         if (prompt.isBlank()) return
 
-        _uiState.update { it.copy(isLoading = true, error = null, output = "") }
+        val userMessage = ChatMessage(role = MessageRole.USER, content = prompt)
+        _uiState.update { state ->
+            state.copy(
+                prompt = "",
+                messages = state.messages + userMessage,
+                isLoading = true,
+                error = null
+            )
+        }
+
+        val contextString = buildContextString(_uiState.value.messages)
 
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { service.runInference(masterApiKey, prompt) }
+            runCatching { service.runInference(masterApiKey, contextString) }
                 .onFailure { ex ->
                     val message = when (ex) {
                         is RemoteException -> "Service error: ${ex.message}"
@@ -117,15 +124,33 @@ class PlaygroundViewModel @Inject constructor(
         }
     }
 
+    fun clearHistory() {
+        _uiState.update { it.copy(messages = emptyList(), error = null) }
+    }
+
+    private fun buildContextString(history: List<ChatMessage>): String =
+        history.filter { it.role != MessageRole.SYSTEM }
+            .joinToString("\n") { msg ->
+                when (msg.role) {
+                    MessageRole.USER -> "User: ${msg.content}"
+                    MessageRole.MODEL -> "Model: ${msg.content}"
+                    MessageRole.SYSTEM -> ""
+                }
+            }
+
     private fun parseAndApply(json: String) {
         runCatching {
             val obj = JSONObject(json)
             if (obj.optBoolean("success", false)) {
-                _uiState.update {
-                    it.copy(
+                val modelMessage = ChatMessage(
+                    role = MessageRole.MODEL,
+                    content = obj.optString("completion", ""),
+                    latencyMs = obj.optLong("latency_ms", 0L)
+                )
+                _uiState.update { state ->
+                    state.copy(
                         isLoading = false,
-                        output = obj.optString("completion", ""),
-                        latencyMs = obj.optLong("latency_ms", 0L),
+                        messages = state.messages + modelMessage,
                         error = null
                     )
                 }

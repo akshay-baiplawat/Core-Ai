@@ -11,7 +11,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
-private val BASE_URL: String get() = TODO("Insert production catalog URL here")
+private const val BASE_URL = "https://example.com/"
 private const val CONNECT_TIMEOUT_S = 30L
 private const val READ_TIMEOUT_S = 120L
 
