@@ -11,7 +11,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
-private const val BASE_URL = "https://example.com/"
+private const val BASE_URL = "https://mp7183f50a299fd36c3d.free.beeceptor.com"
 private const val CONNECT_TIMEOUT_S = 30L
 private const val READ_TIMEOUT_S = 120L
 
