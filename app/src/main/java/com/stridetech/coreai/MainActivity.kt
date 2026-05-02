@@ -18,8 +18,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -28,6 +31,7 @@ import com.stridetech.coreai.ui.devdocs.DeveloperDocsScreen
 import com.stridetech.coreai.ui.modelhub.ModelHubScreen
 import com.stridetech.coreai.ui.playground.PlaygroundScreen
 import com.stridetech.coreai.ui.settings.SettingsScreen
+import com.stridetech.coreai.ui.theme.CoreAiTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 private const val ROUTE_PLAYGROUND = "playground"
@@ -43,7 +47,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme {
+            val appViewModel: AppViewModel = hiltViewModel()
+            val themeMode by appViewModel.themeMode.collectAsStateWithLifecycle()
+            CoreAiTheme(themeMode = themeMode) {
                 val navController = rememberNavController()
                 val backStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = backStackEntry?.destination?.route
@@ -98,7 +104,13 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 }
-                            }
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = MaterialTheme.colorScheme.background,
+                                titleContentColor = MaterialTheme.colorScheme.onBackground,
+                                actionIconContentColor = MaterialTheme.colorScheme.onBackground,
+                                navigationIconContentColor = MaterialTheme.colorScheme.onBackground,
+                            )
                         )
                     }
                 ) { innerPadding ->
@@ -115,7 +127,12 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable(ROUTE_MODEL_HUB) { ModelHubScreen() }
-                        composable(ROUTE_SETTINGS) { SettingsScreen() }
+                        composable(ROUTE_SETTINGS) {
+                            SettingsScreen(
+                                themeMode = themeMode,
+                                onThemeModeChange = appViewModel::setThemeMode
+                            )
+                        }
                         composable(ROUTE_DEVELOPER_DOCS) { DeveloperDocsScreen() }
                     }
                 }

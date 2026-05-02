@@ -51,6 +51,8 @@ class PlaygroundViewModel @Inject constructor(
         apiKeyManager.getExistingKeys().firstOrNull() ?: apiKeyManager.generateKey()
     }
 
+    private var pendingOwnInference = false
+
     private val modelCallback = object : ICoreAiCallback.Stub() {
         override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {
             _uiState.update { it.copy(activeModelName = activeModelName?.takeIf { name -> name.isNotEmpty() }) }
@@ -113,6 +115,7 @@ class PlaygroundViewModel @Inject constructor(
         val contextString = buildContextString(_uiState.value.messages)
 
         viewModelScope.launch(Dispatchers.IO) {
+            pendingOwnInference = true
             runCatching { service.runInference(masterApiKey, contextString) }
                 .onFailure { ex ->
                     val message = when (ex) {
@@ -139,13 +142,16 @@ class PlaygroundViewModel @Inject constructor(
             }
 
     private fun parseAndApply(json: String) {
+        val isOwn = pendingOwnInference
+        pendingOwnInference = false
         runCatching {
             val obj = JSONObject(json)
             if (obj.optBoolean("success", false)) {
                 val modelMessage = ChatMessage(
                     role = MessageRole.MODEL,
                     content = obj.optString("completion", ""),
-                    latencyMs = obj.optLong("latency_ms", 0L)
+                    latencyMs = obj.optLong("latency_ms", 0L),
+                    isOwnResponse = isOwn
                 )
                 _uiState.update { state ->
                     state.copy(

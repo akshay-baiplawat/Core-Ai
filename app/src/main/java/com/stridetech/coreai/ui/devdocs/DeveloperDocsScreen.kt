@@ -2,6 +2,7 @@ package com.stridetech.coreai.ui.devdocs
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,11 +13,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,10 +39,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val CODE_BG = Color(0xFF1E1E2E)
-private val CODE_HEADER_BG = Color(0xFF2A2A3E)
-private val CODE_TEXT = Color(0xFFCDD6F4)
-private val CODE_TITLE_TEXT = Color(0xFF89B4FA)
+// Premium IDE color palette — Catppuccin Mocha inspired
+private val IDE_BG = Color(0xFF1E1E2E)
+private val IDE_HEADER_BG = Color(0xFF181825)
+private val IDE_BORDER = Color(0xFF313244)
+private val IDE_CODE_TEXT = Color(0xFFCDD6F4)
+private val IDE_TITLE_TEXT = Color(0xFF89B4FA)
+private val IDE_COPY_ICON = Color(0xFF6C7086)
 
 @Composable
 fun DeveloperDocsScreen() {
@@ -45,12 +53,15 @@ fun DeveloperDocsScreen() {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
+        Spacer(modifier = Modifier.height(4.dp))
+
         Text(
             text = "Developer Integration Guide",
-            style = MaterialTheme.typography.headlineSmall
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground
         )
         Text(
             text = "Follow these steps to bind your app to the Core AI service and run LLM inference locally.",
@@ -58,13 +69,14 @@ fun DeveloperDocsScreen() {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        HorizontalDivider()
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         DocStep(number = 1, title = "Copy the AIDL Files") {
             Text(
                 text = "Copy the two AIDL interface files into your project, preserving the exact package " +
                     "path com/stridetech/coreai/ under your src/main/aidl/ directory.",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             Text(
@@ -90,7 +102,8 @@ src/main/aidl/com/stridetech/coreai/ICoreAiCallback.aidl"""
             Text(
                 text = "Add a <queries> block so Android allows your app to discover the Core AI service, " +
                     "and declare the FOREGROUND_SERVICE permission required for IPC binding.",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             CodeSnippetCard(
@@ -117,7 +130,8 @@ src/main/aidl/com/stridetech/coreai/ICoreAiCallback.aidl"""
             Text(
                 text = "Create a ServiceConnection, build the explicit Intent, and call bindService in your " +
                     "Activity or ViewModel. Remember to unbind in onDestroy / onCleared.",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             CodeSnippetCard(
@@ -167,7 +181,8 @@ class MyViewModel(private val app: Application) : AndroidViewModel(app) {
             Text(
                 text = "Implement ICoreAiCallback.Stub to receive model state changes and inference results, " +
                     "then call runInference(apiKey, prompt). Obtain an API key from the Core AI Settings screen.",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             CodeSnippetCard(
@@ -209,18 +224,21 @@ fun runPrompt(apiKey: String, prompt: String) {
             )
         }
 
-        Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth()
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer
+            )
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = "API Response Format",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = """{ "completion": "...", "latency_ms": 1234, "success": true, "error": null }""",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
@@ -239,23 +257,29 @@ private fun DocStep(
     title: String,
     content: @Composable () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Surface(
                 color = MaterialTheme.colorScheme.primary,
-                shape = RoundedCornerShape(50)
+                shape = CircleShape,
+                modifier = Modifier.size(28.dp)
             ) {
-                Text(
-                    text = number.toString(),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = number.toString(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
             }
-            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
         }
         content()
     }
@@ -269,34 +293,37 @@ fun CodeSnippetCard(title: String, code: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(color = CODE_BG, shape = RoundedCornerShape(8.dp))
+            .background(color = IDE_BG, shape = RoundedCornerShape(12.dp))
+            .border(width = 1.dp, color = IDE_BORDER, shape = RoundedCornerShape(12.dp))
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    color = CODE_HEADER_BG,
-                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
+                    color = IDE_HEADER_BG,
+                    shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
                 )
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelSmall,
-                color = CODE_TITLE_TEXT
+                color = IDE_TITLE_TEXT
             )
             IconButton(
                 onClick = {
                     clipboardManager.setText(AnnotatedString(code))
                     Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                }
+                },
+                modifier = Modifier.size(36.dp)
             ) {
                 Icon(
                     imageVector = Icons.Outlined.ContentCopy,
                     contentDescription = "Copy code",
-                    tint = CODE_TITLE_TEXT
+                    tint = IDE_COPY_ICON,
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
@@ -305,16 +332,16 @@ fun CodeSnippetCard(title: String, code: String) {
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
             Text(
                 text = code,
                 style = MaterialTheme.typography.bodySmall.copy(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
-                    lineHeight = 18.sp
+                    lineHeight = 20.sp
                 ),
-                color = CODE_TEXT
+                color = IDE_CODE_TEXT
             )
         }
     }

@@ -19,15 +19,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -86,6 +89,7 @@ fun PlaygroundScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer
                 )
@@ -93,7 +97,8 @@ fun PlaygroundScreen(
                 Text(
                     text = error,
                     modifier = Modifier.padding(12.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
@@ -103,49 +108,75 @@ fun PlaygroundScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(state.messages, key = { it.id }) { message ->
+            items(
+                state.messages.filter { it.role == MessageRole.USER || it.isOwnResponse },
+                key = { it.id }
+            ) { message ->
                 ChatBubble(message = message)
             }
             if (state.isLoading) {
                 item {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 4.dp),
                         horizontalArrangement = Arrangement.Start
                     ) {
                         CircularProgressIndicator(
                             modifier = Modifier
                                 .padding(8.dp)
                                 .size(20.dp),
-                            strokeWidth = 2.dp
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
             }
         }
 
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedTextField(
                 value = state.prompt,
                 onValueChange = viewModel::onPromptChange,
-                label = { Text("Message") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-                maxLines = 5
+                placeholder = { Text("Message") },
+                modifier = Modifier.weight(1f),
+                minLines = 1,
+                maxLines = 5,
+                shape = RoundedCornerShape(24.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
             )
-            Button(
+            val canSend = !state.isLoading && state.isServiceBound && state.prompt.isNotBlank()
+            FilledIconButton(
                 onClick = viewModel::runInference,
-                enabled = !state.isLoading && state.isServiceBound && state.prompt.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()
+                enabled = canSend,
+                shape = CircleShape,
+                modifier = Modifier.size(52.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             ) {
-                Text("Send")
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.Send,
+                    contentDescription = "Send",
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }
@@ -169,20 +200,22 @@ private fun ChatBubble(message: ChatMessage) {
                     else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = 300.dp)
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 Text(
                     text = message.content,
                     color = if (isUser) MaterialTheme.colorScheme.onPrimary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.3f
+                    )
                 )
                 if (message.latencyMs > 0L) {
                     Text(
                         text = "${message.latencyMs} ms",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
-                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier.padding(top = 2.dp)
+                        color = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.65f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
             }
@@ -209,16 +242,17 @@ private fun ServiceStatusRow(
         ) {
             Box(
                 modifier = Modifier
-                    .size(10.dp)
+                    .size(8.dp)
                     .background(
-                        color = if (isBound) Color(0xFF4CAF50) else Color(0xFFF44336),
+                        color = if (isBound) Color(0xFF10B981) else Color(0xFFEF4444),
                         shape = CircleShape
                     )
             )
             Column {
                 Text(
                     text = if (isBound) "Service connected" else "Service disconnected",
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (activeModelName != null) {
                     Text(
@@ -232,12 +266,13 @@ private fun ServiceStatusRow(
 
         OutlinedButton(
             onClick = onSwitchModel,
-            modifier = Modifier.padding(start = 8.dp)
+            modifier = Modifier.padding(start = 8.dp),
+            shape = RoundedCornerShape(8.dp)
         ) {
             Icon(
                 imageVector = Icons.Outlined.Build,
                 contentDescription = null,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(14.dp)
             )
             Text(
                 text = if (activeModelName != null) "Switch Model" else "Load Model",
