@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,6 +24,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.stridetech.coreai.ui.devdocs.DeveloperDocsScreen
 import com.stridetech.coreai.ui.modelhub.ModelHubScreen
 import com.stridetech.coreai.ui.playground.PlaygroundScreen
 import com.stridetech.coreai.ui.settings.SettingsScreen
@@ -31,6 +33,7 @@ import dagger.hilt.android.AndroidEntryPoint
 private const val ROUTE_PLAYGROUND = "playground"
 private const val ROUTE_MODEL_HUB = "model_hub"
 private const val ROUTE_SETTINGS = "settings"
+private const val ROUTE_DEVELOPER_DOCS = "developer_docs"
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -53,12 +56,15 @@ class MainActivity : ComponentActivity() {
                                     when (currentRoute) {
                                         ROUTE_MODEL_HUB -> "Model Hub"
                                         ROUTE_SETTINGS -> "Settings"
+                                        ROUTE_DEVELOPER_DOCS -> "Developer Docs"
                                         else -> "Core AI Playground"
                                     }
                                 )
                             },
                             navigationIcon = {
-                                if (currentRoute == ROUTE_MODEL_HUB || currentRoute == ROUTE_SETTINGS) {
+                                if (currentRoute == ROUTE_MODEL_HUB || currentRoute == ROUTE_SETTINGS ||
+                                    currentRoute == ROUTE_DEVELOPER_DOCS
+                                ) {
                                     IconButton(onClick = { navController.popBackStack() }) {
                                         Icon(
                                             imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
@@ -84,6 +90,14 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 }
+                                if (currentRoute != ROUTE_DEVELOPER_DOCS) {
+                                    IconButton(onClick = { navController.navigate(ROUTE_DEVELOPER_DOCS) }) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Code,
+                                            contentDescription = "Developer Docs"
+                                        )
+                                    }
+                                }
                             }
                         )
                     }
@@ -102,6 +116,7 @@ class MainActivity : ComponentActivity() {
                         }
                         composable(ROUTE_MODEL_HUB) { ModelHubScreen() }
                         composable(ROUTE_SETTINGS) { SettingsScreen() }
+                        composable(ROUTE_DEVELOPER_DOCS) { DeveloperDocsScreen() }
                     }
                 }
             }
