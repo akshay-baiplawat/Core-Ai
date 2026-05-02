@@ -18,10 +18,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -36,6 +39,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.stridetech.coreai.hub.DownloadStatus
+import com.stridetech.coreai.hub.ModelCatalogItem
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -122,6 +127,159 @@ fun ModelHubScreen(
                     modifier = Modifier.padding(12.dp),
                     color = MaterialTheme.colorScheme.onErrorContainer
                 )
+            }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = "Model Catalog", style = MaterialTheme.typography.titleMedium)
+            IconButton(
+                onClick = { viewModel.fetchCatalog() },
+                enabled = !state.isFetchingCatalog
+            ) {
+                Icon(imageVector = Icons.Outlined.Refresh, contentDescription = "Refresh catalog")
+            }
+        }
+
+        when {
+            state.isFetchingCatalog -> {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(
+                        text = "Loading catalog…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            state.catalogError != null -> {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = state.catalogError.orEmpty(),
+                        modifier = Modifier.padding(12.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+            state.catalogItems.isEmpty() -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "No models available in catalog.",
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            else -> {
+                val localFileNames = state.models.map { it.fileName }.toSet()
+                state.catalogItems.forEach { item ->
+                    CatalogItemCard(
+                        item = item,
+                        downloadStatus = state.downloadProgress[item.id],
+                        isAlreadyDownloaded = localFileNames.contains(
+                            "${item.id}.${item.engineType.name.lowercase()}"
+                        ),
+                        onDownload = { viewModel.downloadModel(item) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogItemCard(
+    item: ModelCatalogItem,
+    downloadStatus: DownloadStatus?,
+    isAlreadyDownloaded: Boolean,
+    onDownload: () -> Unit
+) {
+    val isDownloading = downloadStatus is DownloadStatus.Progress
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                if (isAlreadyDownloaded) {
+                    Icon(
+                        imageVector = Icons.Outlined.CheckCircle,
+                        contentDescription = "Downloaded",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "${formatFileSize(item.fileSize)} · ${item.engineType.name.lowercase()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            when {
+                isDownloading -> {
+                    val percent = (downloadStatus as DownloadStatus.Progress).percent
+                    LinearProgressIndicator(
+                        progress = { percent / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Downloading… $percent%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                downloadStatus is DownloadStatus.Error -> {
+                    Text(
+                        text = "Error: ${downloadStatus.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    OutlinedButton(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                        Text("Retry")
+                    }
+                }
+                isAlreadyDownloaded -> {
+                    Text(
+                        text = "Already installed",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                else -> {
+                    Button(
+                        onClick = onDownload,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Text("Download")
+                    }
+                }
             }
         }
     }

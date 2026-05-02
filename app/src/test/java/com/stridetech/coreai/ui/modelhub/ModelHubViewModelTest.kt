@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Intent
 import android.content.ServiceConnection
 import com.stridetech.coreai.ICoreAiInterface
+import com.stridetech.coreai.hub.ModelApiService
+import com.stridetech.coreai.hub.ModelDownloader
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkConstructor
@@ -50,7 +52,7 @@ class ModelHubViewModelTest {
         every { fakeApp.bindService(any<Intent>(), any<ServiceConnection>(), any<Int>()) } returns false
         every { fakeApp.getExternalFilesDir(any()) } returns null
 
-        viewModel = ModelHubViewModel(fakeApp)
+        viewModel = ModelHubViewModel(fakeApp, mockk(relaxed = true), mockk(relaxed = true))
         mockService = mockk(relaxed = true)
         injectService(viewModel, mockService)
     }

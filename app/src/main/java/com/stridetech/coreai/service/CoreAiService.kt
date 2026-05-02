@@ -10,17 +10,21 @@ import com.google.gson.Gson
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
 import com.stridetech.coreai.ml.LlmEngine
+import com.stridetech.coreai.security.ApiKeyManager
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.inject.Inject
 
 private const val TAG = "CoreAiService"
 private val MODEL_EXTENSIONS = setOf("bin", "litertlm")
 
-class CoreAiService : Service() {
+@AndroidEntryPoint
+open class CoreAiService : Service() {
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -28,11 +32,13 @@ class CoreAiService : Service() {
     private lateinit var engine: LlmEngine
     private val gson = Gson()
 
+    @Inject lateinit var apiKeyManager: ApiKeyManager
+
     private val callbacks = RemoteCallbackList<ICoreAiCallback>()
 
-    @Volatile private var isModelLoading = false
-    @Volatile private var loadFailed = false
-    @Volatile private var modelNotFound = false
+    private val isModelLoading = AtomicBoolean(false)
+    private val loadFailed = AtomicBoolean(false)
+    private val modelNotFound = AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
@@ -43,7 +49,7 @@ class CoreAiService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!engine.isReady && !isModelLoading) loadWithFallback()
+        if (!engine.isReady && !isModelLoading.get()) loadWithFallback()
         return START_NOT_STICKY
     }
 
@@ -75,18 +81,27 @@ class CoreAiService : Service() {
         callbacks.finishBroadcast()
     }
 
+    private fun broadcastInferenceResult(result: String) {
+        val count = callbacks.beginBroadcast()
+        for (i in 0 until count) {
+            runCatching { callbacks.getBroadcastItem(i).onInferenceResult(result) }
+                .onFailure { Log.w(TAG, "Callback inference delivery failed: ${it.message}") }
+        }
+        callbacks.finishBroadcast()
+    }
+
     private fun loadWithFallback() {
-        isModelLoading = true
-        loadFailed = false
-        modelNotFound = false
+        isModelLoading.set(true)
+        loadFailed.set(false)
+        modelNotFound.set(false)
         serviceScope.launch {
             val modelsDir = getExternalFilesDir("models")
             val modelFile = modelsDir?.listFiles()
                 ?.firstOrNull { it.extension in MODEL_EXTENSIONS }
 
             if (modelFile == null) {
-                modelNotFound = true
-                isModelLoading = false
+                modelNotFound.set(true)
+                isModelLoading.set(false)
                 val msg = "No model file found in ${modelsDir?.absolutePath ?: "external storage unavailable"}."
                 Log.e(TAG, msg)
                 broadcastError(msg)
@@ -98,9 +113,9 @@ class CoreAiService : Service() {
     }
 
     private suspend fun loadModelPath(modelPath: String) {
-        isModelLoading = true
-        loadFailed = false
-        modelNotFound = false
+        isModelLoading.set(true)
+        loadFailed.set(false)
+        modelNotFound.set(false)
         Log.i(TAG, "Loading model: $modelPath")
 
         runCatching { engine.load(modelPath, Backend.GpuArtisan()) }
@@ -108,7 +123,7 @@ class CoreAiService : Service() {
                 Log.w(TAG, "GpuArtisan backend failed (${artisanEx.message}), falling back to CPU")
                 runCatching { engine.load(modelPath, Backend.CPU()) }
                     .onFailure { cpuEx ->
-                        loadFailed = true
+                        loadFailed.set(true)
                         Log.e(TAG, "CPU fallback also failed: ${cpuEx.message}", cpuEx)
                         broadcastError("Model failed to load: ${cpuEx.message ?: "unknown error"}")
                     }
@@ -122,7 +137,7 @@ class CoreAiService : Service() {
                 broadcastModelState()
             }
 
-        isModelLoading = false
+        isModelLoading.set(false)
     }
 
     private val binder = object : ICoreAiInterface.Stub() {
@@ -130,22 +145,36 @@ class CoreAiService : Service() {
         override fun runInference(apiKey: String?, prompt: String?): String {
             val startMs = System.currentTimeMillis()
             return when {
-                isModelLoading -> errorResponse("Model is currently loading, please wait.", startMs)
-                modelNotFound -> errorResponse("No model loaded. Use Model Hub to load a model.", startMs)
-                loadFailed -> errorResponse("Model failed to load: ${engine.lastLoadError ?: "unknown error"}", startMs)
-                !engine.isReady -> errorResponse("No active model. Load and activate a model in Model Hub.", startMs)
-                prompt.isNullOrBlank() -> errorResponse("Prompt must not be empty", startMs)
-                else -> runBlocking(Dispatchers.IO) {
-                    runCatching { engine.runInference(prompt) }
-                        .fold(
-                            onSuccess = { completion ->
-                                successResponse(completion, System.currentTimeMillis() - startMs)
-                            },
-                            onFailure = { ex ->
-                                Log.e(TAG, "Inference failed", ex)
-                                errorResponse(ex.message ?: "Unknown error", startMs)
-                            }
-                        )
+                !apiKeyManager.isValidKey(apiKey ?: "") ->
+                    errorResponse("Invalid or missing API key.", startMs)
+                isModelLoading.get() ->
+                    errorResponse("Model is currently loading, please wait.", startMs)
+                modelNotFound.get() ->
+                    errorResponse("No model loaded. Use Model Hub to load a model.", startMs)
+                loadFailed.get() ->
+                    errorResponse("Model failed to load: ${engine.lastLoadError ?: "unknown error"}", startMs)
+                !engine.isReady ->
+                    errorResponse("No active model. Load and activate a model in Model Hub.", startMs)
+                prompt.isNullOrBlank() ->
+                    errorResponse("Prompt must not be empty", startMs)
+                else -> {
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching { engine.runInference(prompt) }
+                            .fold(
+                                onSuccess = { completion ->
+                                    broadcastInferenceResult(
+                                        successResponse(completion, System.currentTimeMillis() - startMs)
+                                    )
+                                },
+                                onFailure = { ex ->
+                                    Log.e(TAG, "Inference failed", ex)
+                                    broadcastInferenceResult(
+                                        errorResponse(ex.message ?: "Unknown error", startMs)
+                                    )
+                                }
+                            )
+                    }
+                    pendingResponse(startMs)
                 }
             }
         }
@@ -154,7 +183,7 @@ class CoreAiService : Service() {
 
         override fun getActiveModelName(): String? = engine.activeModelName()
 
-        override fun validateApiKey(apiKey: String?): Boolean = !apiKey.isNullOrBlank()
+        override fun validateApiKey(apiKey: String?): Boolean = apiKeyManager.isValidKey(apiKey ?: "")
 
         override fun reloadModel() {
             engine.close()
@@ -191,6 +220,17 @@ class CoreAiService : Service() {
             if (callback != null) callbacks.unregister(callback)
         }
     }
+
+    private fun pendingResponse(startMs: Long): String =
+        gson.toJson(
+            mapOf(
+                "completion" to null,
+                "latency_ms" to (System.currentTimeMillis() - startMs),
+                "success" to true,
+                "pending" to true,
+                "error" to null
+            )
+        )
 
     private fun successResponse(completion: String, latencyMs: Long): String =
         gson.toJson(

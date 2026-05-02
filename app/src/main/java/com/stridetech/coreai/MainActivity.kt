@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -24,10 +25,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.stridetech.coreai.ui.modelhub.ModelHubScreen
 import com.stridetech.coreai.ui.playground.PlaygroundScreen
+import com.stridetech.coreai.ui.settings.SettingsScreen
 import dagger.hilt.android.AndroidEntryPoint
 
 private const val ROUTE_PLAYGROUND = "playground"
 private const val ROUTE_MODEL_HUB = "model_hub"
+private const val ROUTE_SETTINGS = "settings"
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -47,12 +50,15 @@ class MainActivity : ComponentActivity() {
                         TopAppBar(
                             title = {
                                 Text(
-                                    if (currentRoute == ROUTE_MODEL_HUB) "Model Hub"
-                                    else "Core AI Playground"
+                                    when (currentRoute) {
+                                        ROUTE_MODEL_HUB -> "Model Hub"
+                                        ROUTE_SETTINGS -> "Settings"
+                                        else -> "Core AI Playground"
+                                    }
                                 )
                             },
                             navigationIcon = {
-                                if (currentRoute == ROUTE_MODEL_HUB) {
+                                if (currentRoute == ROUTE_MODEL_HUB || currentRoute == ROUTE_SETTINGS) {
                                     IconButton(onClick = { navController.popBackStack() }) {
                                         Icon(
                                             imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
@@ -67,6 +73,14 @@ class MainActivity : ComponentActivity() {
                                         Icon(
                                             imageVector = Icons.Outlined.Build,
                                             contentDescription = "Model Hub"
+                                        )
+                                    }
+                                }
+                                if (currentRoute != ROUTE_SETTINGS) {
+                                    IconButton(onClick = { navController.navigate(ROUTE_SETTINGS) }) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Settings,
+                                            contentDescription = "Settings"
                                         )
                                     }
                                 }
@@ -87,6 +101,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable(ROUTE_MODEL_HUB) { ModelHubScreen() }
+                        composable(ROUTE_SETTINGS) { SettingsScreen() }
                     }
                 }
             }

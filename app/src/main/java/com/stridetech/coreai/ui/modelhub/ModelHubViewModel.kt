@@ -13,6 +13,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
+import com.stridetech.coreai.hub.DownloadStatus
+import com.stridetech.coreai.hub.ModelApiService
+import com.stridetech.coreai.hub.ModelCatalogItem
+import com.stridetech.coreai.hub.ModelDownloader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,12 +49,18 @@ data class ModelHubUiState(
     val isImporting: Boolean = false,
     val importError: String? = null,
     val importSuccess: Boolean = false,
-    val serviceError: String? = null
+    val serviceError: String? = null,
+    val catalogItems: List<ModelCatalogItem> = emptyList(),
+    val isFetchingCatalog: Boolean = false,
+    val catalogError: String? = null,
+    val downloadProgress: Map<String, DownloadStatus> = emptyMap()
 )
 
 @HiltViewModel
 class ModelHubViewModel @Inject constructor(
-    application: Application
+    application: Application,
+    private val modelApiService: ModelApiService,
+    private val modelDownloader: ModelDownloader
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(ModelHubUiState())
@@ -65,6 +75,10 @@ class ModelHubViewModel @Inject constructor(
 
         override fun onError(errorMessage: String?) {
             _uiState.update { it.copy(serviceError = errorMessage) }
+        }
+
+        override fun onInferenceResult(resultJson: String?) {
+            // ModelHub does not consume inference results
         }
     }
 
@@ -86,6 +100,7 @@ class ModelHubViewModel @Inject constructor(
     init {
         bindToService()
         refresh()
+        fetchCatalog()
     }
 
     private fun bindToService() {
@@ -207,6 +222,37 @@ class ModelHubViewModel @Inject constructor(
             uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
         ) ?: return null
         return cursor.use { if (it.moveToFirst()) it.getString(0) else null }
+    }
+
+    fun fetchCatalog() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isFetchingCatalog = true, catalogError = null) }
+            runCatching { withContext(Dispatchers.IO) { modelApiService.fetchCatalog() } }
+                .onSuccess { items ->
+                    _uiState.update { it.copy(catalogItems = items, isFetchingCatalog = false) }
+                }
+                .onFailure { ex ->
+                    Log.e(TAG, "fetchCatalog failed", ex)
+                    _uiState.update {
+                        it.copy(isFetchingCatalog = false, catalogError = ex.message ?: "Failed to load catalog")
+                    }
+                }
+        }
+    }
+
+    fun downloadModel(item: ModelCatalogItem) {
+        viewModelScope.launch {
+            modelDownloader.download(item).collect { status ->
+                _uiState.update { state ->
+                    state.copy(downloadProgress = state.downloadProgress + (item.id to status))
+                }
+                if (status is DownloadStatus.Success) refresh()
+            }
+        }
+    }
+
+    fun dismissCatalogError() {
+        _uiState.update { it.copy(catalogError = null) }
     }
 
     fun dismissError() {

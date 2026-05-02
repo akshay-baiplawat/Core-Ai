@@ -12,6 +12,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
+import com.stridetech.coreai.security.ApiKeyManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import javax.inject.Inject
 
@@ -39,13 +39,20 @@ data class PlaygroundUiState(
 
 @HiltViewModel
 class PlaygroundViewModel @Inject constructor(
-    application: Application
+    application: Application,
+    private val apiKeyManager: ApiKeyManager
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(PlaygroundUiState())
     val uiState: StateFlow<PlaygroundUiState> = _uiState.asStateFlow()
 
     private var coreAiService: ICoreAiInterface? = null
+
+    // Stable master key for this app's own inference calls.
+    // Reuses the first existing key or generates one on first launch.
+    private val masterApiKey: String by lazy {
+        apiKeyManager.getExistingKeys().firstOrNull() ?: apiKeyManager.generateKey()
+    }
 
     private val modelCallback = object : ICoreAiCallback.Stub() {
         override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {
@@ -54,6 +61,10 @@ class PlaygroundViewModel @Inject constructor(
 
         override fun onError(errorMessage: String?) {
             _uiState.update { it.copy(activeModelName = null) }
+        }
+
+        override fun onInferenceResult(resultJson: String?) {
+            parseAndApply(resultJson ?: "")
         }
     }
 
@@ -94,20 +105,15 @@ class PlaygroundViewModel @Inject constructor(
 
         _uiState.update { it.copy(isLoading = true, error = null, output = "") }
 
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { service.runInference("", prompt) }
-            }
-            result.fold(
-                onSuccess = { json -> parseAndApply(json) },
-                onFailure = { ex ->
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { service.runInference(masterApiKey, prompt) }
+                .onFailure { ex ->
                     val message = when (ex) {
                         is RemoteException -> "Service error: ${ex.message}"
                         else -> ex.message ?: "Unknown error"
                     }
                     _uiState.update { it.copy(isLoading = false, error = message) }
                 }
-            )
         }
     }
 

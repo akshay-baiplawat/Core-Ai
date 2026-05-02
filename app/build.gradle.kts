@@ -22,7 +22,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -88,6 +89,14 @@ dependencies {
 
     // MediaPipe Tasks GenAI for .bin model format
     implementation(libs.mediapipe.tasks.genai)
+
+    // Network — Retrofit + OkHttp for Model Hub catalog and downloads
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.converter.gson)
+    implementation(libs.okhttp)
+
+    // Security — encrypted storage for API keys
+    implementation(libs.androidx.security.crypto)
 
     // Testing
     testImplementation(libs.junit)

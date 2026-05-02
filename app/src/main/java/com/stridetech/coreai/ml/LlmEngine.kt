@@ -3,12 +3,16 @@ package com.stridetech.coreai.ml
 import android.content.Context
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LlmEngine"
 
 class LlmEngine(private val context: Context) {
 
-    private val engines = mutableMapOf<String, ModelEngine>()
+    private val engines = ConcurrentHashMap<String, ModelEngine>()
+    private val mapMutex = Mutex()
 
     @Volatile private var activeKey: String? = null
 
@@ -21,7 +25,7 @@ class LlmEngine(private val context: Context) {
 
     fun loadedModelNames(): List<String> = engines.keys.toList()
 
-    suspend fun load(modelPath: String, backend: Backend) {
+    suspend fun load(modelPath: String, backend: Backend) = mapMutex.withLock {
         val key = modelPath.substringAfterLast('/').substringBeforeLast('.')
         val engine = ModelEngineFactory.create(modelPath, context)
         engine.load(modelPath, backend)

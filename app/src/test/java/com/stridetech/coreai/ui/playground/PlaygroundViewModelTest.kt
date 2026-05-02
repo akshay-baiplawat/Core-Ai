@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.content.ServiceConnection
 import com.stridetech.coreai.ICoreAiInterface
+import com.stridetech.coreai.security.ApiKeyManager
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkConstructor
@@ -35,27 +36,32 @@ class PlaygroundViewModelTest {
     private lateinit var testDispatcher: TestDispatcher
     private lateinit var viewModel: PlaygroundViewModel
     private lateinit var mockService: ICoreAiInterface
+    private lateinit var mockApiKeyManager: ApiKeyManager
+
+    companion object {
+        private const val FAKE_MASTER_KEY = "test-api-key-1234"
+    }
 
     @Before
     fun setUp() {
         testDispatcher = StandardTestDispatcher()
         Dispatchers.setMain(testDispatcher)
 
-        // Redirect Dispatchers.IO to the test dispatcher so withContext(Dispatchers.IO)
-        // runs on the virtual test scheduler and is drained by advanceUntilIdle().
         mockkStatic(Dispatchers::class)
         every { Dispatchers.IO } returns testDispatcher
 
-        // Intercept Intent constructor so setClassName() doesn't call into the
-        // Android framework (not available on the JVM test runner).
         mockkConstructor(Intent::class)
         every { anyConstructed<Intent>().setClassName(any<String>(), any<String>()) } returns mockk(relaxed = true)
+
+        mockApiKeyManager = mockk(relaxed = true)
+        every { mockApiKeyManager.getExistingKeys() } returns listOf(FAKE_MASTER_KEY)
+        every { mockApiKeyManager.generateKey() } returns FAKE_MASTER_KEY
 
         val fakeApp = mockk<Application>(relaxed = true)
         every { fakeApp.bindService(any<Intent>(), any<ServiceConnection>(), any<Int>()) } returns false
         every { fakeApp.packageName } returns "com.stridetech.coreai"
 
-        viewModel = PlaygroundViewModel(fakeApp)
+        viewModel = PlaygroundViewModel(fakeApp, mockApiKeyManager)
 
         mockService = mockk(relaxed = true)
         injectService(viewModel, mockService)
@@ -165,6 +171,57 @@ class PlaygroundViewModelTest {
 
         verify(exactly = 0) { mockService.runInference(any(), any()) }
         assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    // ── API key is passed to service ─────────────────────────────────────────
+
+    @Test
+    fun `runInference passes master api key to service`() = runTest(testDispatcher) {
+        val json = """{"completion":"ok","latency_ms":1,"success":true,"error":null}"""
+        every { mockService.runInference(any(), any()) } returns json
+
+        viewModel.onPromptChange("hello")
+        viewModel.runInference()
+        advanceUntilIdle()
+
+        verify(exactly = 1) { mockService.runInference(FAKE_MASTER_KEY, "hello") }
+    }
+
+    @Test
+    fun `master key reuses existing key instead of generating new one`() = runTest(testDispatcher) {
+        // getExistingKeys returns a key, so generateKey should never be called
+        every { mockService.runInference(any(), any()) } returns
+            """{"completion":"ok","latency_ms":1,"success":true,"error":null}"""
+
+        viewModel.onPromptChange("test")
+        viewModel.runInference()
+        advanceUntilIdle()
+
+        verify(exactly = 0) { mockApiKeyManager.generateKey() }
+        verify(exactly = 1) { mockService.runInference(FAKE_MASTER_KEY, any()) }
+    }
+
+    @Test
+    fun `master key generates new key when no existing keys present`() = runTest(testDispatcher) {
+        every { mockApiKeyManager.getExistingKeys() } returns emptyList()
+        every { mockApiKeyManager.generateKey() } returns "brand-new-key"
+        every { mockService.runInference(any(), any()) } returns
+            """{"completion":"ok","latency_ms":1,"success":true,"error":null}"""
+
+        // Create a fresh ViewModel with no existing keys
+        val fakeApp = mockk<Application>(relaxed = true)
+        every { fakeApp.bindService(any<Intent>(), any<ServiceConnection>(), any<Int>()) } returns false
+        every { fakeApp.packageName } returns "com.stridetech.coreai"
+        val freshVm = PlaygroundViewModel(fakeApp, mockApiKeyManager)
+        injectService(freshVm, mockService)
+        setServiceBound(freshVm, true)
+
+        freshVm.onPromptChange("test")
+        freshVm.runInference()
+        advanceUntilIdle()
+
+        verify(exactly = 1) { mockApiKeyManager.generateKey() }
+        verify(exactly = 1) { mockService.runInference("brand-new-key", any()) }
     }
 
     // ── Prompt state ─────────────────────────────────────────────────────────

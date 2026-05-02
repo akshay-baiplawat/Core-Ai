@@ -9,15 +9,33 @@ import kotlinx.coroutines.withContext
 
 private const val TAG = "MediaPipeModelEngine"
 
-class MediaPipeModelEngine(private val context: Context) : ModelEngine {
+internal interface InferenceRunner {
+    fun generate(prompt: String): String
+    fun release()
+}
 
-    @Volatile private var inference: LlmInference? = null
+open class MediaPipeModelEngine(private val context: Context) : ModelEngine {
+
+    @Volatile private var runner: InferenceRunner? = null
     @Volatile private var modelName: String? = null
     @Volatile override var lastLoadError: String? = null
 
-    override val isReady: Boolean get() = inference != null
+    override val isReady: Boolean get() = runner != null
 
     override fun activeModelName(): String? = modelName
+
+    // Seam for unit tests: override to supply a fake InferenceRunner without native libs.
+    internal open fun createRunner(modelPath: String): InferenceRunner {
+        val options = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath(modelPath)
+            .setMaxTokens(1024)
+            .build()
+        val llm = LlmInference.createFromOptions(context, options)
+        return object : InferenceRunner {
+            override fun generate(prompt: String) = llm.generateResponse(prompt)
+            override fun release() = llm.close()
+        }
+    }
 
     override suspend fun load(modelPath: String, backend: Backend) {
         withContext(Dispatchers.IO) {
@@ -25,11 +43,7 @@ class MediaPipeModelEngine(private val context: Context) : ModelEngine {
             close()
             Log.d(TAG, "Loading: $modelPath")
             try {
-                val options = LlmInference.LlmInferenceOptions.builder()
-                    .setModelPath(modelPath)
-                    .setMaxTokens(1024)
-                    .build()
-                inference = LlmInference.createFromOptions(context, options)
+                runner = createRunner(modelPath)
                 modelName = modelPath.substringAfterLast('/').substringBeforeLast('.')
                 Log.i(TAG, "Loaded OK: $modelName")
             } catch (ex: Exception) {
@@ -42,13 +56,13 @@ class MediaPipeModelEngine(private val context: Context) : ModelEngine {
     }
 
     override suspend fun runInference(prompt: String): String = withContext(Dispatchers.IO) {
-        val inf = requireNotNull(inference) { "Engine not loaded. Call load() first." }
-        inf.generateResponse(prompt)
+        val r = requireNotNull(runner) { "Engine not loaded. Call load() first." }
+        r.generate(prompt)
     }
 
     override fun close() {
-        inference?.close()
-        inference = null
+        runner?.release()
+        runner = null
         modelName = null
     }
 }
