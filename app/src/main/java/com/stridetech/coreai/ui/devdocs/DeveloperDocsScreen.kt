@@ -262,29 +262,50 @@ gated (access-restricted) models, using the HF Resolve endpoint.
 
 ### Download a public HF model
 
+  // Public models need no token — pass the resolve URL directly.
+  //
+  // ⚠ SECURITY CONSTRAINTS (same as all downloadCatalogModel calls):
+  //   • downloadUrl MUST start with "https://" — plain HTTP is rejected (SSRF prevention)
+  //   • modelId     MUST be strictly alphanumeric plus dashes/underscores [a-zA-Z0-9_-]+
+  //                 Any other characters trigger an instant path-traversal rejection.
   coreAi.downloadCatalogModel(
       apiKey,
-      "gemma-3-1b-q4",
+      "gemma-hf",                 // modelId — alphanumeric + dashes/underscores only
       "https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
       myCallback
   )
 
-### Download a gated HF model (requires HF token)
+### Download a gated HF model (client-side OkHttp + GGUF import)
 
-  // 1. Save your Hugging Face token once (e.g., from a Settings screen input field).
-  //    The token is stored encrypted via EncryptedSharedPreferences inside Core AI.
-  //    Obtain a token at: https://huggingface.co/settings/tokens (read access is sufficient)
-  coreAi.saveHuggingFaceToken(apiKey, "hf_YOUR_TOKEN_HERE")
+  Gated (access-restricted) HF models cannot be downloaded via downloadCatalogModel —
+  Core AI cannot attach your personal HF token to outbound requests. Your client app
+  must perform the authenticated download itself using OkHttp with an
+  "Authorization: Bearer <YOUR_HF_TOKEN>" header, then import the saved file via
+  importLocalModel() using engineType "GGUF".
 
-  // 2. Download the gated model — the token is attached automatically by the interceptor.
-  coreAi.downloadCatalogModel(
-      apiKey,
-      "llama-3-1b",
-      "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf",
-      myCallback
-  )
-  // onModelTransferError fires with "HF Token required or invalid" if the token is
-  // missing or lacks access to the requested repository.
+  // Step 1 — download the .gguf file with OkHttp + Bearer token (read from user input):
+  val request = Request.Builder()
+      .url("https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf")
+      .addHeader("Authorization", "Bearer ${'$'}{userHfToken}")
+      .build()
+
+  okHttpClient.newCall(request).execute().use { response ->
+      if (!response.isSuccessful) { /* handle 401 / 403 — invalid or missing token */ return }
+      val file = File(cacheDir, "Llama-3.2-1B.gguf")
+      file.outputStream().use { response.body!!.byteStream().copyTo(it) }
+
+      // Step 2 — import the saved file into Core AI via FileProvider URI.
+      // "GGUF" is a fully supported engineType alongside "LITERT" and "BIN".
+      val uri = FileProvider.getUriForFile(context, "${'$'}{packageName}.provider", file)
+      coreAi.importLocalModel(
+          apiKey,
+          uri,
+          "llama-3-2-1b",   // targetModelId — alphanumeric + dashes/underscores only
+          "GGUF",            // engineType: "GGUF" for any llama.cpp-compatible .gguf file
+          myCallback
+      )
+  }
+  // onModelTransferProgress → onModelTransferComplete → call loadModel() to bring into RAM
 
 ---
 
@@ -720,39 +741,57 @@ https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-
             CodeSnippetCard(
                 title = "Kotlin — Download a public HF model",
                 code = """// Public models need no token — pass the resolve URL directly.
+//
+// ⚠ SECURITY CONSTRAINTS (same as all downloadCatalogModel calls):
+//   • downloadUrl MUST start with "https://" — plain HTTP is rejected (SSRF prevention)
+//   • modelId     MUST be strictly alphanumeric plus dashes/underscores [a-zA-Z0-9_-]+
+//                 Any other characters trigger an instant path-traversal rejection.
 coreAi.downloadCatalogModel(
     apiKey,
-    "gemma-3-1b-q4",
+    "gemma-hf",                 // modelId — alphanumeric + dashes/underscores only
     "https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
     myCallback
 )"""
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "Gated models require a Hugging Face token. Get one at huggingface.co/settings/tokens " +
-                    "(read access is sufficient). Save it once — Core AI stores it encrypted.",
+                text = "Gated (access-restricted) HF models cannot be downloaded via downloadCatalogModel — " +
+                    "Core AI cannot attach your personal HF token to outbound requests. Your client app " +
+                    "must perform the authenticated download itself using OkHttp with an " +
+                    "\"Authorization: Bearer <YOUR_HF_TOKEN>\" header, then import the saved file via " +
+                    "importLocalModel() using engineType \"GGUF\".",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             CodeSnippetCard(
-                title = "Kotlin — Save HF token & download a gated model",
-                code = """// Step 1 — save the token once (e.g., from a Settings screen text field).
-//   Core AI stores it in EncryptedSharedPreferences; the HuggingFaceInterceptor
-//   attaches it automatically to every huggingface.co request.
-//   Never hardcode a real token — read it from user input at runtime.
-coreAi.saveHuggingFaceToken(apiKey, userEnteredToken)
+                title = "Kotlin — Download a gated HF model (client-side OkHttp + GGUF import)",
+                code = """// Gated models: your app must perform the authenticated download itself.
+// Core AI cannot attach HF tokens to outbound requests on your behalf.
+//
+// Step 1 — download the .gguf file with OkHttp + Bearer token (read from user input):
+val request = Request.Builder()
+    .url("https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf")
+    .addHeader("Authorization", "Bearer ${'$'}{userHfToken}")
+    .build()
 
-// Step 2 — download; the Authorization header is added transparently.
-coreAi.downloadCatalogModel(
-    apiKey,
-    "llama-3-1b",
-    "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf",
-    myCallback
-)
+okHttpClient.newCall(request).execute().use { response ->
+    if (!response.isSuccessful) { /* handle 401 / 403 — invalid or missing token */ return }
+    val file = File(cacheDir, "Llama-3.2-1B.gguf")
+    file.outputStream().use { response.body!!.byteStream().copyTo(it) }
 
-// If the token is missing or lacks repo access:
-//   onModelTransferError("llama-3-1b", "HF Token required or invalid (HTTP 401)")"""
+    // Step 2 — import the saved file into Core AI via FileProvider URI.
+    // "GGUF" is a fully supported engineType alongside "LITERT" and "BIN".
+    val uri = FileProvider.getUriForFile(context, "${'$'}{packageName}.provider", file)
+    coreAi.importLocalModel(
+        apiKey,
+        uri,
+        "llama-3-2-1b",   // targetModelId — alphanumeric + dashes/underscores only
+        "GGUF",            // engineType: "GGUF" for any llama.cpp-compatible .gguf file
+        myCallback
+    )
+}
+// onModelTransferProgress → onModelTransferComplete → call loadModel() to bring into RAM"""
             )
         }
 
