@@ -32,49 +32,53 @@ class ModelDownloader @Inject constructor(
 
         val request = Request.Builder().url(item.downloadUrl).build()
 
-        okHttpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                tmpFile.delete()
-                emit(DownloadStatus.Error("HTTP ${response.code}: ${response.message}"))
-                return@flow
-            }
+        try {
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    tmpFile.delete()
+                    emit(DownloadStatus.Error("HTTP ${response.code}: ${response.message}"))
+                    return@flow
+                }
 
-            val body = response.body ?: run {
-                emit(DownloadStatus.Error("Empty response body"))
-                return@flow
-            }
+                val body = response.body ?: run {
+                    emit(DownloadStatus.Error("Empty response body"))
+                    return@flow
+                }
 
-            val contentLength = if (item.fileSize > 0) item.fileSize else body.contentLength()
+                val contentLength = if (item.fileSize > 0) item.fileSize else body.contentLength()
 
-            body.source().use { source ->
-                tmpFile.sink().buffer().use { sink ->
-                    var bytesRead = 0L
-                    val bufferSize = 8 * 1024L
-                    var lastReportedPercent = -1
+                body.source().use { source ->
+                    tmpFile.sink().buffer().use { sink ->
+                        var bytesRead = 0L
+                        val bufferSize = 8 * 1024L
+                        var lastReportedPercent = -1
 
-                    while (true) {
-                        val read = source.read(sink.buffer, bufferSize)
-                        if (read == -1L) break
-                        sink.emitCompleteSegments()
-                        bytesRead += read
+                        while (true) {
+                            val read = source.read(sink.buffer, bufferSize)
+                            if (read == -1L) break
+                            sink.emitCompleteSegments()
+                            bytesRead += read
 
-                        if (contentLength > 0) {
-                            val percent = ((bytesRead * 100) / contentLength).toInt().coerceIn(0, 99)
-                            if (percent != lastReportedPercent) {
-                                lastReportedPercent = percent
-                                emit(DownloadStatus.Progress(percent))
+                            if (contentLength > 0) {
+                                val percent = ((bytesRead * 100) / contentLength).toInt().coerceIn(0, 99)
+                                if (percent != lastReportedPercent) {
+                                    lastReportedPercent = percent
+                                    emit(DownloadStatus.Progress(percent))
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        if (finalFile.exists()) finalFile.delete()
-        if (!tmpFile.renameTo(finalFile)) {
-            throw java.io.IOException("Failed to rename ${tmpFile.path} to ${finalFile.path}")
+            if (finalFile.exists()) finalFile.delete()
+            if (!tmpFile.renameTo(finalFile)) {
+                throw java.io.IOException("Failed to rename ${tmpFile.path} to ${finalFile.path}")
+            }
+            emit(DownloadStatus.Success(finalFile))
+        } finally {
+            if (tmpFile.exists()) tmpFile.delete()
         }
-        emit(DownloadStatus.Success(finalFile))
     }.flowOn(Dispatchers.IO)
 }
 
@@ -82,4 +86,5 @@ private val EngineType.extension: String
     get() = when (this) {
         EngineType.LITERTLM -> "litertlm"
         EngineType.BIN -> "bin"
+        EngineType.GGUF -> "gguf"
     }

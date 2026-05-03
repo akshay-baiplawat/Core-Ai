@@ -90,7 +90,7 @@ fun ModelHubScreen(
                     )
                 ) {
                     Text(
-                        text = "No models installed. Import a .bin or .litertlm file to get started.",
+                        text = "No models installed. Import a .gguf, .bin, or .litertlm file to get started.",
                         modifier = Modifier.padding(16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -488,5 +488,6 @@ private fun formatFileSize(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
-private fun formatDate(epochMs: Long): String =
-    SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(epochMs))
+private val DATE_FORMATTER = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
+
+private fun formatDate(epochMs: Long): String = DATE_FORMATTER.format(Date(epochMs))

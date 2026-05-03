@@ -18,6 +18,8 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "CATALOG_BASE_URL", "\"https://mp7183f50a299fd36c3d.free.beeceptor.com\"")
     }
 
     buildTypes {
@@ -45,6 +47,7 @@ android {
     buildFeatures {
         aidl = true
         compose = true
+        buildConfig = true
     }
 
     testOptions {
@@ -87,6 +90,9 @@ dependencies {
 
     // LiteRT-LM for on-device LLM inference
     implementation(libs.litertlm.android)
+
+    // llama-kotlin-android: Kotlin-first llama.cpp wrapper with Flow streaming
+    implementation("org.codeshipping:llama-kotlin-android:0.1.1")
 
     // MediaPipe Tasks GenAI for .bin model format
     implementation(libs.mediapipe.tasks.genai)

@@ -26,6 +26,8 @@ import javax.inject.Inject
 private const val TAG = "PlaygroundViewModel"
 private const val BIND_ACTION = "com.stridetech.coreai.BIND_LLM_SERVICE"
 private const val SERVICE_CLASS = "com.stridetech.coreai.service.CoreAiService"
+private const val CONTEXT_WINDOW_MESSAGES = 10
+private const val CONTEXT_WINDOW_WORDS = 1500
 
 data class PlaygroundUiState(
     val prompt: String = "",
@@ -51,7 +53,7 @@ class PlaygroundViewModel @Inject constructor(
         apiKeyManager.getExistingKeys().firstOrNull() ?: apiKeyManager.generateKey()
     }
 
-    private var pendingOwnInference = false
+    @Volatile private var pendingOwnInference = false
 
     private val modelCallback = object : ICoreAiCallback.Stub() {
         override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {
@@ -63,7 +65,27 @@ class PlaygroundViewModel @Inject constructor(
         }
 
         override fun onInferenceResult(resultJson: String?) {
+            // Used by non-streaming engines (LiteRT, MediaPipe); GGUF streams via onInferenceToken.
             parseAndApply(resultJson ?: "")
+        }
+
+        override fun onInferenceToken(token: String?) {
+            token ?: return
+            _uiState.update { state ->
+                val last = state.messages.lastOrNull()
+                val updatedMessages = if (last?.role == MessageRole.MODEL && last.isOwnResponse) {
+                    val updatedMessage = last.copy(content = last.content + token)
+                    state.messages.dropLast(1) + updatedMessage
+                } else {
+                    state.messages + ChatMessage(role = MessageRole.MODEL, content = token, isOwnResponse = pendingOwnInference)
+                }
+                state.copy(messages = updatedMessages, isLoading = true)
+            }
+        }
+
+        override fun onInferenceComplete(latencyMs: Long) {
+            pendingOwnInference = false
+            _uiState.update { it.copy(isLoading = false) }
         }
 
         override fun onModelTransferProgress(modelId: String?, percent: Int) {}
@@ -135,15 +157,30 @@ class PlaygroundViewModel @Inject constructor(
         _uiState.update { it.copy(messages = emptyList(), error = null) }
     }
 
-    private fun buildContextString(history: List<ChatMessage>): String =
-        history.filter { it.role != MessageRole.SYSTEM }
-            .joinToString("\n") { msg ->
-                when (msg.role) {
-                    MessageRole.USER -> "User: ${msg.content}"
-                    MessageRole.MODEL -> "Model: ${msg.content}"
-                    MessageRole.SYSTEM -> ""
-                }
+    private fun buildContextString(history: List<ChatMessage>): String {
+        val window = history
+            .filter { it.role != MessageRole.SYSTEM }
+            .takeLast(CONTEXT_WINDOW_MESSAGES)
+
+        // Trim further if the tail still exceeds the word budget.
+        var wordCount = 0
+        val trimmed = window.toMutableList()
+        for (i in trimmed.indices.reversed()) {
+            wordCount += trimmed[i].content.split(Regex("\\s+")).size
+            if (wordCount > CONTEXT_WINDOW_WORDS) {
+                trimmed.subList(0, i + 1).clear()
+                break
             }
+        }
+
+        return trimmed.joinToString("\n") { msg ->
+            when (msg.role) {
+                MessageRole.USER -> "User: ${msg.content}"
+                MessageRole.MODEL -> "Model: ${msg.content}"
+                MessageRole.SYSTEM -> ""
+            }
+        }
+    }
 
     private fun parseAndApply(json: String) {
         val isOwn = pendingOwnInference

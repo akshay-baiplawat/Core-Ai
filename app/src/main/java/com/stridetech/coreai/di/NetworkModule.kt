@@ -1,5 +1,6 @@
 package com.stridetech.coreai.di
 
+import com.stridetech.coreai.BuildConfig
 import com.stridetech.coreai.hub.ModelApiService
 import dagger.Module
 import dagger.Provides
@@ -11,7 +12,6 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
-private const val BASE_URL = "https://mp7183f50a299fd36c3d.free.beeceptor.com"
 private const val CONNECT_TIMEOUT_S = 30L
 private const val READ_TIMEOUT_S = 120L
 
@@ -31,7 +31,7 @@ object NetworkModule {
     @Singleton
     fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit =
         Retrofit.Builder()
-            .baseUrl(BASE_URL)
+            .baseUrl(BuildConfig.CATALOG_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()

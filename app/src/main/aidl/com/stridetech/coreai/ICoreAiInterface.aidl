@@ -33,6 +33,13 @@ interface ICoreAiInterface {
      */
     void unloadModel(String apiKey, String modelId, ICoreAiCallback callback);
 
+    /**
+     * Atomically unload a model (if loaded) then delete its file from disk.
+     * Acquires the EngineLock to prevent concurrent inference during deletion.
+     * Result delivered via onModelStateChanged or onError on the supplied callback.
+     */
+    void deleteModel(String apiKey, String modelId, ICoreAiCallback callback);
+
     /** Promote an already-loaded model to the active inference slot. */
     void setActiveModel(String apiKey, String modelId);
 

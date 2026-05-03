@@ -61,14 +61,24 @@ class ModelEngineFactoryTest {
         assertTrue(engine is MediaPipeModelEngine)
     }
 
-    // ── Edge cases ────────────────────────────────────────────────────────────
+    // ── GGUF routing ──────────────────────────────────────────────────────────
 
     @Test
-    fun `unsupported extension throws IllegalArgumentException`() {
-        assertThrows(IllegalArgumentException::class.java) {
-            ModelEngineFactory.create("/models/model.gguf", context)
-        }
+    fun `gguf extension routes to GgufModelEngine`() {
+        val engine = ModelEngineFactory.create("/models/model.gguf", context)
+        assertTrue(
+            "Expected GgufModelEngine but got ${engine::class.simpleName}",
+            engine is GgufModelEngine
+        )
     }
+
+    @Test
+    fun `gguf extension is case-insensitive`() {
+        val engine = ModelEngineFactory.create("/models/model.GGUF", context)
+        assertTrue(engine is GgufModelEngine)
+    }
+
+    // ── Edge cases ────────────────────────────────────────────────────────────
 
     @Test
     fun `no extension throws IllegalArgumentException`() {

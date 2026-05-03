@@ -47,8 +47,172 @@ private val IDE_CODE_TEXT = Color(0xFFCDD6F4)
 private val IDE_TITLE_TEXT = Color(0xFF89B4FA)
 private val IDE_COPY_ICON = Color(0xFF6C7086)
 
+// !! SYNC WARNING !!
+// FULL_DOC_TEXT is the plain-text copy used by the top-level "Copy full doc" button.
+// Every time you add, remove, or reword a step in the Compose UI below (DocStep / CodeSnippetCard),
+// you MUST update this string to match. It is NOT auto-generated from the UI — drift will
+// silently produce a stale clipboard payload for developers who copy the full guide.
+private val FULL_DOC_TEXT = """
+# Core AI — Developer Integration Guide
+
+Follow these steps to bind your app to the Core AI service and run LLM inference locally.
+
+---
+
+## Step 1 — Copy the AIDL Files
+
+Copy the two AIDL interface files into your project, preserving the exact package path
+com/stridetech/coreai/ under your src/main/aidl/ directory.
+
+Files required:
+  src/main/aidl/com/stridetech/coreai/ICoreAiInterface.aidl
+  src/main/aidl/com/stridetech/coreai/ICoreAiCallback.aidl
+
+The package declaration inside each file must match exactly: package com.stridetech.coreai;
+
+---
+
+## Step 2 — Declare Manifest Requirements
+
+Add a <queries> block so Android allows your app to discover the Core AI service,
+and declare the FOREGROUND_SERVICE permission required for IPC binding.
+
+  <manifest ...>
+      <queries>
+          <package android:name="com.stridetech.coreai" />
+      </queries>
+      <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+      <application ...>
+          ...
+      </application>
+  </manifest>
+
+---
+
+## Step 3 — Bind to the Service
+
+Create a ServiceConnection, build the explicit Intent, and call bindService in your
+Activity or ViewModel. Remember to unbind in onDestroy / onCleared.
+
+  import android.content.ComponentName
+  import android.content.Context
+  import android.content.Intent
+  import android.content.ServiceConnection
+  import android.os.IBinder
+  import com.stridetech.coreai.ICoreAiInterface
+
+  private const val BIND_ACTION   = "com.stridetech.coreai.BIND_LLM_SERVICE"
+  private const val SERVICE_PKG   = "com.stridetech.coreai"
+  private const val SERVICE_CLASS = "com.stridetech.coreai.service.CoreAiService"
+
+  class MyViewModel(private val app: Application) : AndroidViewModel(app) {
+      private var coreAi: ICoreAiInterface? = null
+
+      private val connection = object : ServiceConnection {
+          override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+              coreAi = ICoreAiInterface.Stub.asInterface(binder)
+              coreAi?.registerCallback(myCallback)
+          }
+          override fun onServiceDisconnected(name: ComponentName) { coreAi = null }
+      }
+
+      fun bind() {
+          val intent = Intent(BIND_ACTION).apply { setClassName(SERVICE_PKG, SERVICE_CLASS) }
+          app.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+      }
+
+      override fun onCleared() {
+          coreAi?.unregisterCallback(myCallback)
+          app.unbindService(connection)
+      }
+  }
+
+---
+
+## Step 4 — Register Callback & Run Inference
+
+Implement ICoreAiCallback.Stub to receive model state changes and inference results,
+then call runInference(apiKey, prompt). Obtain an API key from the Core AI Settings screen.
+
+  import com.stridetech.coreai.ICoreAiCallback
+  import org.json.JSONObject
+
+  private val myCallback = object : ICoreAiCallback.Stub() {
+      override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {}
+      override fun onError(errorMessage: String?) {}
+      override fun onInferenceResult(resultJson: String?) {
+          resultJson ?: return
+          val json       = JSONObject(resultJson)
+          val success    = json.optBoolean("success", false)
+          val completion = json.optString("completion")
+          val latencyMs  = json.optLong("latency_ms")
+      }
+      override fun onModelTransferProgress(modelId: String?, percent: Int) {}
+      override fun onModelTransferComplete(modelId: String?, filePath: String?) {}
+      override fun onModelTransferError(modelId: String?, errorMessage: String?) {}
+  }
+
+  fun runPrompt(apiKey: String, prompt: String) {
+      val service = coreAi ?: return
+      if (!service.isReady()) return
+      viewModelScope.launch(Dispatchers.IO) {
+          service.runInference(apiKey, prompt)
+      }
+  }
+
+---
+
+## Step 5 — Querying Engine State
+
+Use the JSON state query methods to inspect what is active and what is available on the device.
+
+  val activeJson     = coreAi.getActiveModel(apiKey)
+  // { "modelId": "gemma-2b", "isReady": true }
+
+  val downloadedJson = coreAi.getDownloadedModels(apiKey)
+  // { "models": [{ "modelId": "gemma-2b", "path": "/data/.../gemma-2b.bin", "sizeBytes": 1500000000 }], "error": null }
+
+  val loadedJson     = coreAi.getLoadedModels(apiKey)
+  // { "models": ["gemma-2b", "phi-2"], "error": null }
+
+  val isValid: Boolean = coreAi.validateApiKey(apiKey)
+
+---
+
+## Step 6 — Managing Models
+
+Download official catalog models or import your own GGUF / LiteRT files from local storage.
+
+  // Download from URL
+  coreAi.downloadCatalogModel(apiKey, "gemma-2b", "https://example.com/models/gemma-2b.bin", myCallback)
+  // Callbacks: onModelTransferProgress("gemma-2b", 0..100) → onModelTransferComplete(...)
+
+  // Import from device storage (Storage Access Framework URI)
+  coreAi.importLocalModel(apiKey, uri, "my-custom-model", "LITERT", myCallback)
+
+---
+
+## Step 7 — Engine Lifecycle (RAM Management)
+
+After a model file is on disk, use the lifecycle methods to control what lives in RAM.
+
+  coreAi.loadModel(apiKey, "gemma-2b", myCallback)   // load into RAM
+  coreAi.setActiveModel(apiKey, "gemma-2b")           // route runInference() here
+  coreAi.runInference(apiKey, prompt)                 // produces onInferenceResult
+  coreAi.unloadModel(apiKey, "gemma-2b", myCallback)  // free RAM when done
+
+---
+
+## API Response Format
+
+  { "completion": "...", "latency_ms": 1234, "success": true, "error": null }
+""".trimIndent()
+
 @Composable
 fun DeveloperDocsScreen() {
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -58,11 +222,32 @@ fun DeveloperDocsScreen() {
     ) {
         Spacer(modifier = Modifier.height(4.dp))
 
-        Text(
-            text = "Developer Integration Guide",
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Developer Integration Guide",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(FULL_DOC_TEXT))
+                    Toast.makeText(context, "Full doc copied to clipboard", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy full document",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
         Text(
             text = "Follow these steps to bind your app to the Core AI service and run LLM inference locally.",
             style = MaterialTheme.typography.bodyMedium,

@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -67,9 +69,8 @@ open class CoreAiService : Service() {
 
     override fun onDestroy() {
         serviceScope.cancel()
-        engine.close()
-        broadcastModelState()
         callbacks.kill()
+        runBlocking { engine.close() }
         super.onDestroy()
     }
 
@@ -116,6 +117,24 @@ open class CoreAiService : Service() {
         callbacks.finishBroadcast()
     }
 
+    private fun broadcastToken(token: String) {
+        val count = callbacks.beginBroadcast()
+        for (i in 0 until count) {
+            runCatching { callbacks.getBroadcastItem(i).onInferenceToken(token) }
+                .onFailure { Log.w(TAG, "Token callback failed: ${it.message}") }
+        }
+        callbacks.finishBroadcast()
+    }
+
+    private fun broadcastInferenceComplete(latencyMs: Long) {
+        val count = callbacks.beginBroadcast()
+        for (i in 0 until count) {
+            runCatching { callbacks.getBroadcastItem(i).onInferenceComplete(latencyMs) }
+                .onFailure { Log.w(TAG, "Complete callback failed: ${it.message}") }
+        }
+        callbacks.finishBroadcast()
+    }
+
     // ── Auto-load (first model found on disk) ─────────────────────────────────
 
     private fun loadWithFallback() {
@@ -123,22 +142,24 @@ open class CoreAiService : Service() {
         loadFailed.set(false)
         modelNotFound.set(false)
         serviceScope.launch {
-            val dir = getExternalFilesDir("models")
-            val modelFile = dir?.listFiles()?.firstOrNull { it.extension in MODEL_EXTENSIONS }
+            try {
+                val dir = getExternalFilesDir("models")
+                val modelFile = dir?.listFiles()?.firstOrNull { it.extension in MODEL_EXTENSIONS }
 
-            if (modelFile == null) {
-                modelNotFound.set(true)
+                if (modelFile == null) {
+                    modelNotFound.set(true)
+                    val msg = if (dir == null)
+                        "No model file found — external storage unavailable."
+                    else
+                        "No model file found in ${dir.absolutePath}."
+                    Log.e(TAG, msg)
+                    broadcastError(msg)
+                    return@launch
+                }
+                loadModelFile(modelFile, callback = null)
+            } finally {
                 isModelLoading.set(false)
-                val msg = if (dir == null)
-                    "No model file found — external storage unavailable."
-                else
-                    "No model file found in ${dir.absolutePath}."
-                Log.e(TAG, msg)
-                broadcastError(msg)
-                return@launch
             }
-            loadModelFile(modelFile, callback = null)
-            isModelLoading.set(false)
         }
     }
 
@@ -202,15 +223,15 @@ open class CoreAiService : Service() {
             }
 
             serviceScope.launch {
+                val startMs = System.currentTimeMillis()
                 try {
-                    runCatching { engine.runInference(prompt) }
-                        .fold(
-                            onSuccess = { broadcastInferenceResult(successResponse(it, System.currentTimeMillis() - startMs)) },
-                            onFailure = {
-                                Log.e(TAG, "Inference failed", it)
-                                broadcastInferenceResult(errorResponse(it.message ?: "Unknown error", startMs))
-                            }
-                        )
+                    engine.runInferenceStream(prompt).collect { token ->
+                        broadcastToken(token)
+                    }
+                    broadcastInferenceComplete(System.currentTimeMillis() - startMs)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "Inference failed", ex)
+                    broadcastInferenceResult(errorResponse(ex.message ?: "Unknown error", startMs))
                 } finally {
                     releaseLock()
                 }
@@ -229,15 +250,15 @@ open class CoreAiService : Service() {
             if (!checkApiKey(apiKey, callback)) return
             if (modelId.isNullOrBlank()) { callback?.onError("modelId must not be empty."); return }
 
-            // Smart cache: requested model is already active — fire immediately
-            if (engine.activeModelName() == modelId && engine.isReady) {
-                callback?.onModelStateChanged(true, modelId)
-                return
-            }
-
             if (!tryAcquireLock(callback)) return
             serviceScope.launch {
                 try {
+                    // Smart cache check inside lock — prevents TOCTOU race on active model state
+                    if (engine.activeModelName() == modelId && engine.isReady) {
+                        callback?.onModelStateChanged(true, modelId)
+                        return@launch
+                    }
+
                     // Unload a different active model before loading the new one
                     val currentActive = engine.activeModelName()
                     if (currentActive != null && currentActive != modelId) {
@@ -275,13 +296,38 @@ open class CoreAiService : Service() {
             }
         }
 
+        override fun deleteModel(apiKey: String?, modelId: String?, callback: ICoreAiCallback?) {
+            if (!checkApiKey(apiKey, callback)) return
+            if (modelId.isNullOrBlank()) { callback?.onError("modelId must not be empty."); return }
+            if (!modelId.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("modelId contains invalid characters."); return }
+            if (!tryAcquireLock(callback)) return
+            serviceScope.launch {
+                try {
+                    val modelFile = findModelFile(modelId)
+                    if (modelFile != null) {
+                        engine.unload(modelFile.absolutePath)
+                        if (!modelFile.delete()) {
+                            callback?.onError("Failed to delete model file for id: $modelId")
+                            return@launch
+                        }
+                    }
+                    callback?.onModelStateChanged(engine.isReady, engine.activeModelName() ?: "")
+                    broadcastModelState()
+                } finally {
+                    releaseLock()
+                }
+            }
+        }
+
         override fun setActiveModel(apiKey: String?, modelId: String?) {
             if (!apiKeyManager.isValidKey(apiKey ?: "")) return
             if (modelId.isNullOrBlank()) return
             val modelFile = findModelFile(modelId) ?: return
-            runCatching { engine.setActive(modelFile.absolutePath) }
-                .onSuccess { broadcastModelState() }
-                .onFailure { Log.e(TAG, "setActiveModel failed: ${it.message}") }
+            serviceScope.launch {
+                runCatching { engine.setActive(modelFile.absolutePath) }
+                    .onSuccess { broadcastModelState() }
+                    .onFailure { Log.e(TAG, "setActiveModel failed: ${it.message}") }
+            }
         }
 
         // ── Catalog download ──────────────────────────────────────────────────
@@ -295,6 +341,8 @@ open class CoreAiService : Service() {
             if (!checkApiKey(apiKey, callback)) return
             if (modelId.isNullOrBlank()) { callback?.onError("modelId must not be empty."); return }
             if (downloadUrl.isNullOrBlank()) { callback?.onError("downloadUrl must not be empty."); return }
+            if (!downloadUrl.startsWith("https://")) { callback?.onError("downloadUrl must use HTTPS."); return }
+            if (!modelId.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("modelId contains invalid characters."); return }
 
             serviceScope.launch {
                 val dir = modelsDir() ?: run {
@@ -317,10 +365,12 @@ open class CoreAiService : Service() {
                     val request = Request.Builder().url(downloadUrl!!).build()
                     okHttpClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) {
+                            tmpFile.delete()
                             callback?.onModelTransferError(modelId!!, "HTTP ${response.code}: ${response.message}")
                             return@launch
                         }
                         val body = response.body ?: run {
+                            tmpFile.delete()
                             callback?.onModelTransferError(modelId!!, "Empty response body.")
                             return@launch
                         }
@@ -375,6 +425,7 @@ open class CoreAiService : Service() {
             if (!checkApiKey(apiKey, callback)) return
             if (uri == null) { callback?.onError("uri must not be null."); return }
             if (targetModelId.isNullOrBlank()) { callback?.onError("targetModelId must not be empty."); return }
+            if (!targetModelId.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("targetModelId contains invalid characters."); return }
 
             serviceScope.launch {
                 val dir = modelsDir() ?: run {
@@ -409,8 +460,9 @@ open class CoreAiService : Service() {
 
                     var copied = 0L
                     val buffer = ByteArray(BUFFER_SIZE)
-                    tmpFile.outputStream().use { out ->
-                        inputStream.use { input ->
+                    // inputStream is the outer .use so it is closed even if outputStream() throws.
+                    inputStream.use { input ->
+                        tmpFile.outputStream().use { out ->
                             while (true) {
                                 val read = input.read(buffer)
                                 if (read == -1) break
@@ -421,6 +473,7 @@ open class CoreAiService : Service() {
                                     callback?.onModelTransferProgress(targetModelId!!, percent)
                                 }
                             }
+                            out.flush()
                         }
                     }
 
@@ -482,9 +535,6 @@ open class CoreAiService : Service() {
 
     private fun pendingResponse(startMs: Long): String =
         gson.toJson(mapOf("completion" to null, "latency_ms" to (System.currentTimeMillis() - startMs), "success" to true, "pending" to true, "error" to null))
-
-    private fun successResponse(completion: String, latencyMs: Long): String =
-        gson.toJson(mapOf("completion" to completion, "latency_ms" to latencyMs, "success" to true, "pending" to false, "error" to null))
 
     private fun errorResponse(message: String, startMs: Long): String =
         gson.toJson(mapOf("completion" to null, "latency_ms" to (System.currentTimeMillis() - startMs), "success" to false, "pending" to false, "error" to message))

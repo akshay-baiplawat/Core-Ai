@@ -14,6 +14,7 @@ import io.mockk.mockkStatic
 import io.mockk.runs
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.After
@@ -304,7 +305,7 @@ class CoreAiServiceTest {
     @Test
     fun `runInference proceeds past key check when api key is valid and engine is ready`() {
         every { mockEngine.isReady } returns true
-        coEvery { mockEngine.runInference(any()) } returns "Pong"
+        coEvery { mockEngine.runInferenceStream(any()) } returns kotlinx.coroutines.flow.flowOf("Pong")
 
         val latch = CountDownLatch(1)
         every { mockCallbacks.finishBroadcast() } answers { latch.countDown() }
@@ -318,7 +319,7 @@ class CoreAiServiceTest {
 
         // Wait for async inference to complete and deliver via onInferenceResult callback
         assertTrue("Inference callback not delivered within timeout", latch.await(5, TimeUnit.SECONDS))
-        coVerify(exactly = 1) { mockEngine.runInference("Ping") }
+        coVerify(exactly = 1) { mockEngine.runInferenceStream("Ping") }
     }
 
     // ── EngineLock concurrency ────────────────────────────────────────────────
@@ -350,7 +351,7 @@ class CoreAiServiceTest {
 
         // A's load sleeps on the IO thread — keeps the lock held long enough
         // for the test thread to call loadModel() a second time while A is running.
-        coEvery { mockEngine.load(any(), any()) } coAnswers { Thread.sleep(200) }
+        coEvery { mockEngine.load(any(), any()) } coAnswers { delay(200) }
 
         val latchA = CountDownLatch(1)
         every { callbackA.onModelStateChanged(any(), any()) } answers { latchA.countDown() }

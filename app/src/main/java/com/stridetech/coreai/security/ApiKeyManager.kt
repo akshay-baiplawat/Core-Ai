@@ -29,7 +29,7 @@ class ApiKeyManager @Inject constructor(application: Application) {
     fun generateKey(): String {
         val key = UUID.randomUUID().toString()
         val updated = storedKeys().toMutableSet().also { it.add(key) }
-        prefs.edit().putStringSet(KEY_API_KEYS, updated).apply()
+        prefs.edit().putStringSet(KEY_API_KEYS, updated).commit()
         return key
     }
 
@@ -39,11 +39,11 @@ class ApiKeyManager @Inject constructor(application: Application) {
 
     fun revokeKey(key: String) {
         val updated = storedKeys().toMutableSet().also { it.remove(key) }
-        prefs.edit().putStringSet(KEY_API_KEYS, updated).apply()
+        prefs.edit().putStringSet(KEY_API_KEYS, updated).commit()
     }
 
     fun revokeAll() {
-        prefs.edit().putStringSet(KEY_API_KEYS, emptySet()).apply()
+        prefs.edit().putStringSet(KEY_API_KEYS, emptySet()).commit()
     }
 
     private fun storedKeys(): Set<String> =

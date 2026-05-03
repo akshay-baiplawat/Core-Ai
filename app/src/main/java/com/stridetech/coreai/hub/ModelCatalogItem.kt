@@ -12,5 +12,6 @@ data class ModelCatalogItem(
 
 enum class EngineType {
     @SerializedName("litertlm") LITERTLM,
-    @SerializedName("bin") BIN
+    @SerializedName("bin") BIN,
+    @SerializedName("gguf") GGUF
 }
