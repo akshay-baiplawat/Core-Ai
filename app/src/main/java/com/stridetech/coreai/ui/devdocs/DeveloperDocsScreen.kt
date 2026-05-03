@@ -184,11 +184,21 @@ Use the JSON state query methods to inspect what is active and what is available
 Download official catalog models or import your own GGUF / LiteRT files from local storage.
 
   // Download from URL
+  //
+  // SECURITY CONSTRAINTS — requests violating these are rejected immediately:
+  //   • downloadUrl MUST start with "https://" (plain HTTP is blocked to prevent SSRF)
+  //   • modelId     MUST match regex [a-zA-Z0-9_-]+ (alphanumeric, dashes, underscores only)
+  //                 Any other characters trigger an instant rejection to prevent
+  //                 path traversal attacks on the engine's internal storage sandbox.
   coreAi.downloadCatalogModel(apiKey, "gemma-2b", "https://example.com/models/gemma-2b.bin", myCallback)
   // Callbacks: onModelTransferProgress("gemma-2b", 0..100) → onModelTransferComplete(...)
 
   // Import from device storage (Storage Access Framework URI)
-  coreAi.importLocalModel(apiKey, uri, "my-custom-model", "LITERT", myCallback)
+  // Supported engineType values:
+  //   "GGUF"   — GGUF-format models (llama.cpp-compatible, e.g. .gguf files)
+  //   "LITERT" — LiteRT / TensorFlow Lite flat-buffer models
+  //   "BIN"    — Generic binary format
+  coreAi.importLocalModel(apiKey, uri, "my-custom-model", "GGUF", myCallback)
 
 ---
 
@@ -200,6 +210,10 @@ After a model file is on disk, use the lifecycle methods to control what lives i
   coreAi.setActiveModel(apiKey, "gemma-2b")           // route runInference() here
   coreAi.runInference(apiKey, prompt)                 // produces onInferenceResult
   coreAi.unloadModel(apiKey, "gemma-2b", myCallback)  // free RAM when done
+
+  // Safe deletion — acquires engine lock, unloads from RAM, then deletes file from disk.
+  // Prevents TOCTOU file-in-use races. Result fires onModelTransferComplete or onError.
+  coreAi.deleteModel(apiKey, "gemma-2b", myCallback)
 
 ---
 
@@ -477,10 +491,16 @@ if (!isValid) {
                 code = """// Triggers a background download; progress arrives on the callback.
 // Completes immediately (cache hit) if the file already exists on disk.
 // downloadUrl is required — the service does not maintain a built-in URL registry.
+//
+// ⚠ SECURITY CONSTRAINTS — requests violating these are rejected immediately:
+//   • downloadUrl MUST start with "https://" (plain HTTP is blocked to prevent SSRF)
+//   • modelId     MUST match regex [a-zA-Z0-9_-]+ (alphanumeric, dashes, underscores only)
+//                 Any other characters trigger an instant rejection to prevent
+//                 path traversal attacks on the engine's internal storage sandbox.
 coreAi.downloadCatalogModel(
     apiKey,
     "gemma-2b",                                // modelId — used in all subsequent calls
-    "https://example.com/models/gemma-2b.bin", // downloadUrl — direct link to the model file
+    "https://example.com/models/gemma-2b.bin", // downloadUrl — HTTPS only
     myCallback                                 // receives progress + completion events
 )
 
@@ -504,12 +524,16 @@ val pickModelLauncher = registerForActivityResult(
 pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
 
 // 2. Call importLocalModel — the service streams the file into its sandbox
+//    Supported engineType values:
+//      "GGUF"   — GGUF-format models (llama.cpp-compatible, e.g. .gguf files)
+//      "LITERT" — LiteRT / TensorFlow Lite flat-buffer models
+//      "BIN"    — Generic binary format
 fun importModel(uri: Uri) {
     coreAi.importLocalModel(
         apiKey,
         uri,
         "my-custom-model", // targetModelId used in subsequent calls
-        "LITERT",           // engineType: "LITERT" or "GGUF"
+        "GGUF",            // engineType: "GGUF", "LITERT", or "BIN"
         myCallback
     )
     // onModelTransferProgress → onModelTransferComplete → loadModel(...)
@@ -549,6 +573,21 @@ coreAi.unloadModel(apiKey, "gemma-2b", myCallback)
 //   setActiveModel                            ← routes runInference() here
 //   runInference                              ← produces onInferenceResult
 //   unloadModel                               ← frees RAM when done"""
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
+                title = "Kotlin — deleteModel (safe deletion)",
+                code = """// Permanently removes a model file from disk.
+// The service acquires the engine lock before deletion, ensuring the model
+// is fully unloaded from RAM first — preventing file-in-use races (TOCTOU).
+// Result is delivered via onModelTransferComplete or onError on the callback.
+coreAi.deleteModel(apiKey, "gemma-2b", myCallback)
+
+// Safe deletion order enforced internally:
+//   1. Acquire engine lock
+//   2. Unload model from RAM (if loaded)
+//   3. Delete file from disk
+//   4. Release engine lock → fires onModelTransferComplete"""
             )
         }
 
