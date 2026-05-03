@@ -70,6 +70,27 @@ interface ICoreAiInterface {
     /** Returns {"models":["modelId1","modelId2"],"error":null}. */
     String getLoadedModels(String apiKey);
 
+    // ── Context management ────────────────────────────────────────────────────
+
+    /**
+     * Flush the native KV cache / conversation history for the active model so
+     * the next inference starts from a clean slate. Call this after the UI clears
+     * its message list to keep the service in sync.
+     */
+    void resetChatContext(String apiKey, String modelId);
+
+    /**
+     * Set the context isolation mode for inference:
+     *   "FULL_PROMPT"  — service is stateless; client sends full conversation
+     *                    history as the prompt on every call.
+     *   "PER_CLIENT"   — service tracks conversation history per caller UID;
+     *                    client sends only the latest user turn.
+     */
+    void setContextMode(String apiKey, String mode);
+
+    /** Returns the current context mode ("FULL_PROMPT" or "PER_CLIENT"). */
+    String getContextMode(String apiKey);
+
     // ── Callback registration ─────────────────────────────────────────────────
 
     void registerCallback(ICoreAiCallback callback);

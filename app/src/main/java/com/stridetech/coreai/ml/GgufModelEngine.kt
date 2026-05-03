@@ -5,6 +5,7 @@ import com.google.ai.edge.litertlm.Backend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 
@@ -17,6 +18,7 @@ class GgufModelEngine : ModelEngine {
 
     @Volatile private var llamaModel: LlamaModel? = null
     @Volatile private var modelName: String? = null
+    @Volatile private var modelPath: String? = null
     @Volatile override var lastLoadError: String? = null
 
     override val isReady: Boolean get() = llamaModel != null
@@ -52,6 +54,7 @@ class GgufModelEngine : ModelEngine {
                 }
             }.onSuccess { model ->
                 llamaModel = model
+                this@GgufModelEngine.modelPath = modelPath
                 modelName = modelPath.substringAfterLast('/').substringBeforeLast('.')
                 Log.i(TAG, "Loaded OK: $modelName")
             }.onFailure { ex ->
@@ -78,9 +81,39 @@ class GgufModelEngine : ModelEngine {
     override suspend fun runInference(prompt: String): String =
         runInferenceStream(prompt).toList().joinToString("")
 
+    // No direct JNI API to flush the KV cache, so close the native model and immediately
+    // reload from the same file path to restore a clean context while keeping isReady=true.
+    override fun resetContext() {
+        val path = modelPath ?: run {
+            Log.w(TAG, "resetContext: no model path stored, skipping reload")
+            return
+        }
+        val name = modelName
+        llamaModel?.close()
+        llamaModel = null
+        Log.i(TAG, "Native KV cache cleared for $name — reloading from $path")
+        runBlocking(Dispatchers.IO) {
+            runCatching {
+                LlamaModel.load(path) {
+                    contextSize = DEFAULT_CONTEXT_SIZE
+                    threads = DEFAULT_THREAD_COUNT
+                    gpuLayers = DEFAULT_GPU_LAYERS
+                }
+            }.onSuccess { model ->
+                llamaModel = model
+                modelName = name
+                Log.i(TAG, "Reload after resetContext OK: $modelName")
+            }.onFailure { ex ->
+                lastLoadError = ex.message
+                Log.e(TAG, "Reload after resetContext failed: ${ex.message}", ex)
+            }
+        }
+    }
+
     override fun close() {
         llamaModel?.close()
         llamaModel = null
         modelName = null
+        modelPath = null
     }
 }

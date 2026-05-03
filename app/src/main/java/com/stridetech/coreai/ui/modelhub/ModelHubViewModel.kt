@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
 import com.stridetech.coreai.hub.DownloadStatus
+import com.stridetech.coreai.hub.LocalCatalogDataSource
 import com.stridetech.coreai.hub.ModelApiService
 import com.stridetech.coreai.hub.ModelCatalogItem
 import com.stridetech.coreai.hub.ModelDownloader
@@ -63,6 +64,7 @@ data class ModelHubUiState(
 @HiltViewModel
 class ModelHubViewModel @Inject constructor(
     application: Application,
+    private val localCatalogDataSource: LocalCatalogDataSource,
     private val modelApiService: ModelApiService,
     private val modelDownloader: ModelDownloader,
     private val apiKeyManager: ApiKeyManager
@@ -290,7 +292,7 @@ class ModelHubViewModel @Inject constructor(
     fun fetchCatalog() {
         viewModelScope.launch {
             _uiState.update { it.copy(isFetchingCatalog = true, catalogError = null) }
-            runCatching { withContext(Dispatchers.IO) { modelApiService.fetchCatalog() } }
+            runCatching { withContext(Dispatchers.IO) { localCatalogDataSource.load() } }
                 .onSuccess { items ->
                     _uiState.update { it.copy(catalogItems = items, isFetchingCatalog = false) }
                 }

@@ -14,9 +14,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -28,20 +34,27 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -56,7 +69,21 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var showRevokeAllDialog by remember { mutableStateOf(false) }
+
+    // Pre-populate field with stored token; user can overwrite
+    var hfTokenInput by rememberSaveable(state.hfToken) {
+        mutableStateOf(state.hfToken ?: "")
+    }
+    var hfTokenVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.hfTokenSaved) {
+        if (state.hfTokenSaved) {
+            Toast.makeText(context, "Hugging Face token saved", Toast.LENGTH_SHORT).show()
+            viewModel.clearHfTokenSavedFlag()
+        }
+    }
 
     if (showRevokeAllDialog) {
         AlertDialog(
@@ -82,6 +109,7 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
     ) {
         Spacer(modifier = Modifier.height(16.dp))
@@ -110,6 +138,60 @@ fun SettingsScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Spacer(modifier = Modifier.height(16.dp))
 
+        // ── Hugging Face Token ────────────────────────────────────────────
+        Text(
+            text = "Hugging Face",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Required to download gated models (e.g. Llama). Get a read token at huggingface.co/settings/tokens.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = hfTokenInput,
+            onValueChange = { hfTokenInput = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("HF Token") },
+            placeholder = { Text("hf_xxxxxxxxxxxxxxxxxxxx") },
+            singleLine = true,
+            visualTransformation = if (hfTokenVisible) VisualTransformation.None
+                                   else PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { hfTokenVisible = !hfTokenVisible }) {
+                    Icon(
+                        imageVector = if (hfTokenVisible) Icons.Outlined.VisibilityOff
+                                      else Icons.Outlined.Visibility,
+                        contentDescription = if (hfTokenVisible) "Hide token" else "Show token"
+                    )
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
+            shape = RoundedCornerShape(8.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(
+            onClick = {
+                keyboardController?.hide()
+                viewModel.saveHuggingFaceToken(hfTokenInput)
+            },
+            enabled = hfTokenInput.isNotBlank(),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Save HF Token")
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // ── API Keys ──────────────────────────────────────────────────────
         Text(
             text = "API Keys",
             style = MaterialTheme.typography.titleMedium,
@@ -167,8 +249,8 @@ fun SettingsScreen(
                 )
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(state.apiKeys, key = { it }) { key ->
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                state.apiKeys.forEach { key ->
                     ApiKeyCard(
                         apiKey = key,
                         onCopy = {
@@ -180,6 +262,8 @@ fun SettingsScreen(
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 

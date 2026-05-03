@@ -35,7 +35,9 @@ data class PlaygroundUiState(
     val isServiceBound: Boolean = false,
     val isLoading: Boolean = false,
     val activeModelName: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    /** "FULL_PROMPT" or "PER_CLIENT" — mirrors the service-side ContextMode enum. */
+    val contextMode: String = "FULL_PROMPT"
 )
 
 @HiltViewModel
@@ -97,7 +99,8 @@ class PlaygroundViewModel @Inject constructor(
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             val service = ICoreAiInterface.Stub.asInterface(binder)
             coreAiService = service
-            _uiState.update { it.copy(isServiceBound = true) }
+            val currentMode = runCatching { service.getContextMode(masterApiKey) }.getOrDefault("FULL_PROMPT")
+            _uiState.update { it.copy(isServiceBound = true, contextMode = currentMode) }
             runCatching { service.registerCallback(modelCallback) }
                 .onFailure { Log.w(TAG, "registerCallback failed: ${it.message}") }
         }
@@ -138,7 +141,13 @@ class PlaygroundViewModel @Inject constructor(
             )
         }
 
-        val contextString = buildContextString(_uiState.value.messages)
+        // In PER_CLIENT mode the service owns the history; send only the latest turn.
+        // In FULL_PROMPT mode the client is stateless and sends the full context.
+        val contextString = if (_uiState.value.contextMode == "PER_CLIENT") {
+            prompt
+        } else {
+            buildContextString(_uiState.value.messages)
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             pendingOwnInference = true
@@ -155,6 +164,36 @@ class PlaygroundViewModel @Inject constructor(
 
     fun clearHistory() {
         _uiState.update { it.copy(messages = emptyList(), error = null) }
+        val service = coreAiService ?: return
+        val modelId = _uiState.value.activeModelName ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { service.resetChatContext(masterApiKey, modelId) }
+                .onFailure { ex ->
+                    val message = when (ex) {
+                        is RemoteException -> "Context reset failed: ${ex.message}"
+                        else -> ex.message ?: "Unknown error during context reset"
+                    }
+                    Log.w(TAG, message)
+                    _uiState.update { it.copy(error = message) }
+                }
+        }
+    }
+
+    fun toggleContextMode() {
+        val service = coreAiService ?: return
+        val newMode = if (_uiState.value.contextMode == "FULL_PROMPT") "PER_CLIENT" else "FULL_PROMPT"
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { service.setContextMode(masterApiKey, newMode) }
+                .onSuccess { _uiState.update { it.copy(contextMode = newMode) } }
+                .onFailure { ex ->
+                    val message = when (ex) {
+                        is RemoteException -> "Mode switch failed: ${ex.message}"
+                        else -> ex.message ?: "Unknown error"
+                    }
+                    Log.w(TAG, message)
+                    _uiState.update { it.copy(error = message) }
+                }
+        }
     }
 
     private fun buildContextString(history: List<ChatMessage>): String {
@@ -173,6 +212,12 @@ class PlaygroundViewModel @Inject constructor(
             }
         }
 
+        // Empty history after a clear — return a blank prompt with no trailing whitespace.
+        if (trimmed.isEmpty()) return ""
+
+        // Plain structured text. llamakotlin's generateStream() applies the model's
+        // own chat template from GGUF metadata, so we must NOT inject raw control
+        // tokens here — doing so causes them to leak into the visible response text.
         return trimmed.joinToString("\n") { msg ->
             when (msg.role) {
                 MessageRole.USER -> "User: ${msg.content}"

@@ -1,6 +1,7 @@
 package com.stridetech.coreai.hub
 
 import android.app.Application
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -13,6 +14,7 @@ import java.io.File
 import javax.inject.Inject
 
 private const val MODELS_DIR = "models"
+private const val TAG = "ModelDownloader"
 
 class ModelDownloader @Inject constructor(
     private val application: Application,
@@ -30,13 +32,21 @@ class ModelDownloader @Inject constructor(
         val tmpFile = File(modelsDir, "$finalName.tmp")
         val finalFile = File(modelsDir, finalName)
 
+        // OkHttp follows redirects by default (followRedirects = true); no override needed.
         val request = Request.Builder().url(item.downloadUrl).build()
 
         try {
             okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     tmpFile.delete()
-                    emit(DownloadStatus.Error("HTTP ${response.code}: ${response.message}"))
+                    val message = when (response.code) {
+                        401, 403 -> {
+                            Log.w(TAG, "HF auth error ${response.code} for ${item.downloadUrl}")
+                            "HF Token required or invalid (HTTP ${response.code})"
+                        }
+                        else -> "HTTP ${response.code}: ${response.message}"
+                    }
+                    emit(DownloadStatus.Error(message))
                     return@flow
                 }
 

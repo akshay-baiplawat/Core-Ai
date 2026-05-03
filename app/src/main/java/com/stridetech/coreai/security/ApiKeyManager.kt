@@ -9,6 +9,7 @@ import javax.inject.Singleton
 
 private const val PREFS_FILE = "coreai_api_keys"
 private const val KEY_API_KEYS = "api_keys"
+private const val KEY_HF_TOKEN = "hf_token"
 
 @Singleton
 class ApiKeyManager @Inject constructor(application: Application) {
@@ -45,6 +46,13 @@ class ApiKeyManager @Inject constructor(application: Application) {
     fun revokeAll() {
         prefs.edit().putStringSet(KEY_API_KEYS, emptySet()).commit()
     }
+
+    fun saveHuggingFaceToken(token: String) {
+        prefs.edit().putString(KEY_HF_TOKEN, token).commit()
+    }
+
+    fun getHuggingFaceToken(): String? =
+        prefs.getString(KEY_HF_TOKEN, null)?.takeIf { it.isNotBlank() }
 
     private fun storedKeys(): Set<String> =
         prefs.getStringSet(KEY_API_KEYS, emptySet()) ?: emptySet()

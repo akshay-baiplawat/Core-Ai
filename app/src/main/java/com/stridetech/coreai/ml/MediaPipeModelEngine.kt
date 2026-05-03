@@ -60,6 +60,12 @@ open class MediaPipeModelEngine(private val context: Context) : ModelEngine {
         r.generate(prompt)
     }
 
+    // MediaPipe LlmInference.generateResponse is a stateless one-shot call with no
+    // persistent session state; override provided for API symmetry.
+    override fun resetContext() {
+        Log.i(TAG, "resetContext called for $modelName — no persistent session state to clear")
+    }
+
     override fun close() {
         runner?.release()
         runner = null

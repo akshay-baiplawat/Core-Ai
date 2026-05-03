@@ -190,6 +190,9 @@ Download official catalog models or import your own GGUF / LiteRT files from loc
   //   • modelId     MUST match regex [a-zA-Z0-9_-]+ (alphanumeric, dashes, underscores only)
   //                 Any other characters trigger an instant rejection to prevent
   //                 path traversal attacks on the engine's internal storage sandbox.
+  //
+  // DEFAULT MODEL — pass "" or null for modelId to automatically use the
+  //   system default model (google_gemma-3-1b-it-Q4_K_M).
   coreAi.downloadCatalogModel(apiKey, "gemma-2b", "https://example.com/models/gemma-2b.bin", myCallback)
   // Callbacks: onModelTransferProgress("gemma-2b", 0..100) → onModelTransferComplete(...)
 
@@ -206,6 +209,8 @@ Download official catalog models or import your own GGUF / LiteRT files from loc
 
 After a model file is on disk, use the lifecycle methods to control what lives in RAM.
 
+  // Pass "" or null for modelId to load/delete the system default model
+  // (google_gemma-3-1b-it-Q4_K_M) without specifying an id explicitly.
   coreAi.loadModel(apiKey, "gemma-2b", myCallback)   // load into RAM
   coreAi.setActiveModel(apiKey, "gemma-2b")           // route runInference() here
   coreAi.runInference(apiKey, prompt)                 // produces onInferenceResult
@@ -214,6 +219,72 @@ After a model file is on disk, use the lifecycle methods to control what lives i
   // Safe deletion — acquires engine lock, unloads from RAM, then deletes file from disk.
   // Prevents TOCTOU file-in-use races. Result fires onModelTransferComplete or onError.
   coreAi.deleteModel(apiKey, "gemma-2b", myCallback)
+
+---
+
+## Step 8 — Context Isolation Mode
+
+Two modes control how conversation history is managed across calls:
+
+  FULL_PROMPT  (default) — service is stateless; the client sends the full conversation
+               history as the prompt on every runInference() call.
+               Safest for multi-app scenarios — no cross-client bleed.
+
+  PER_CLIENT   — the service stores conversation history keyed by your app's UID.
+               Send only the latest user message; the service prepends history automatically.
+               resetChatContext() clears only your app's session, not others'.
+
+  // Switch mode — takes effect immediately for all subsequent runInference() calls.
+  // "FULL_PROMPT" or "PER_CLIENT"
+  coreAi.setContextMode(apiKey, "PER_CLIENT")
+
+  // Read the active mode
+  val mode: String = coreAi.getContextMode(apiKey)
+
+  // Reset the current session (clears your UID's history in PER_CLIENT mode;
+  // in FULL_PROMPT mode this also flushes the native llama.cpp KV cache).
+  coreAi.resetChatContext(apiKey, modelId)
+
+---
+
+## Step 9 — Hugging Face Integration
+
+Core AI supports downloading GGUF models directly from Hugging Face, including
+gated (access-restricted) models, using the HF Resolve endpoint.
+
+### URL pattern
+
+  https://huggingface.co/[USER]/[REPO]/resolve/[REVISION]/[FILENAME]
+
+  Examples:
+    https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
+    https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf
+
+### Download a public HF model
+
+  coreAi.downloadCatalogModel(
+      apiKey,
+      "gemma-3-1b-q4",
+      "https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
+      myCallback
+  )
+
+### Download a gated HF model (requires HF token)
+
+  // 1. Save your Hugging Face token once (e.g., from a Settings screen input field).
+  //    The token is stored encrypted via EncryptedSharedPreferences inside Core AI.
+  //    Obtain a token at: https://huggingface.co/settings/tokens (read access is sufficient)
+  coreAi.saveHuggingFaceToken(apiKey, "hf_YOUR_TOKEN_HERE")
+
+  // 2. Download the gated model — the token is attached automatically by the interceptor.
+  coreAi.downloadCatalogModel(
+      apiKey,
+      "llama-3-1b",
+      "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf",
+      myCallback
+  )
+  // onModelTransferError fires with "HF Token required or invalid" if the token is
+  // missing or lacks access to the requested repository.
 
 ---
 
@@ -497,6 +568,9 @@ if (!isValid) {
 //   • modelId     MUST match regex [a-zA-Z0-9_-]+ (alphanumeric, dashes, underscores only)
 //                 Any other characters trigger an instant rejection to prevent
 //                 path traversal attacks on the engine's internal storage sandbox.
+//
+// ℹ DEFAULT MODEL — pass "" or null for modelId to automatically use the
+//   system default model (google_gemma-3-1b-it-Q4_K_M).
 coreAi.downloadCatalogModel(
     apiKey,
     "gemma-2b",                                // modelId — used in all subsequent calls
@@ -553,6 +627,8 @@ fun importModel(uri: Uri) {
                 title = "Kotlin — loadModel, setActiveModel, unloadModel",
                 code = """// 1. Load a model into RAM (required before inference)
 //    Result delivered via onModelStateChanged or onError on the callback.
+//    Pass "" or null for modelId to load the system default model
+//    (google_gemma-3-1b-it-Q4_K_M) without specifying an id explicitly.
 coreAi.loadModel(apiKey, "gemma-2b", myCallback)
 
 // 2. Promote a loaded model to the active inference slot
@@ -588,6 +664,95 @@ coreAi.deleteModel(apiKey, "gemma-2b", myCallback)
 //   2. Unload model from RAM (if loaded)
 //   3. Delete file from disk
 //   4. Release engine lock → fires onModelTransferComplete"""
+            )
+        }
+
+        DocStep(number = 8, title = "Context Isolation Mode") {
+            Text(
+                text = "Choose how conversation history is managed. FULL_PROMPT (default) is stateless — " +
+                    "the client sends full history every call. PER_CLIENT lets the service track " +
+                    "history per app UID so you only send the latest user message.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Set and read context mode",
+                code = """// Switch to PER_CLIENT — service tracks history per caller UID.
+// Send only the latest user message; history is prepended automatically.
+coreAi.setContextMode(apiKey, "PER_CLIENT")
+
+// Switch back to FULL_PROMPT — service is stateless.
+// Client is responsible for sending full conversation history each call.
+coreAi.setContextMode(apiKey, "FULL_PROMPT")
+
+// Read the active mode ("FULL_PROMPT" or "PER_CLIENT")
+val mode: String = coreAi.getContextMode(apiKey)"""
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Reset session context",
+                code = """// Clears this app's conversation history.
+//   PER_CLIENT mode: removes only your UID's session — other apps are unaffected.
+//   FULL_PROMPT mode: flushes the native llama.cpp KV cache for a clean slate.
+// Call this after the user clears the chat to keep the service in sync.
+coreAi.resetChatContext(apiKey, modelId)"""
+            )
+        }
+
+        DocStep(number = 9, title = "Hugging Face Integration") {
+            Text(
+                text = "Download GGUF models directly from Hugging Face — including gated " +
+                    "(access-restricted) repositories — using the HF Resolve endpoint.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "HF Resolve URL pattern",
+                code = """https://huggingface.co/[USER]/[REPO]/resolve/[REVISION]/[FILENAME]
+
+// Examples:
+https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
+https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf"""
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Download a public HF model",
+                code = """// Public models need no token — pass the resolve URL directly.
+coreAi.downloadCatalogModel(
+    apiKey,
+    "gemma-3-1b-q4",
+    "https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
+    myCallback
+)"""
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Gated models require a Hugging Face token. Get one at huggingface.co/settings/tokens " +
+                    "(read access is sufficient). Save it once — Core AI stores it encrypted.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Save HF token & download a gated model",
+                code = """// Step 1 — save the token once (e.g., from a Settings screen text field).
+//   Core AI stores it in EncryptedSharedPreferences; the HuggingFaceInterceptor
+//   attaches it automatically to every huggingface.co request.
+//   Never hardcode a real token — read it from user input at runtime.
+coreAi.saveHuggingFaceToken(apiKey, userEnteredToken)
+
+// Step 2 — download; the Authorization header is added transparently.
+coreAi.downloadCatalogModel(
+    apiKey,
+    "llama-3-1b",
+    "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf",
+    myCallback
+)
+
+// If the token is missing or lacks repo access:
+//   onModelTransferError("llama-3-1b", "HF Token required or invalid (HTTP 401)")"""
             )
         }
 

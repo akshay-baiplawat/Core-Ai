@@ -18,5 +18,12 @@ interface ModelEngine {
     suspend fun runInferenceStream(prompt: String): Flow<String> =
         flow { emit(runInference(prompt)) }
 
+    /**
+     * Flush any in-memory conversation state (KV cache, token history) so the
+     * next inference starts from a clean slate. Engines with no persistent
+     * context may leave this as a no-op.
+     */
+    fun resetContext() {}
+
     fun close()
 }

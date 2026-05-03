@@ -67,6 +67,10 @@ class LlmEngine(private val context: Context) {
         return engine.runInferenceStream(prompt)
     }
 
+    fun resetContext() {
+        activeEngine?.resetContext()
+    }
+
     suspend fun close() = mapMutex.withLock {
         isShuttingDown.set(true)
         engines.values.forEach { it.close() }

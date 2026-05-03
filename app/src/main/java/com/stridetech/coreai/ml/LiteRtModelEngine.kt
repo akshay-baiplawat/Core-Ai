@@ -66,6 +66,12 @@ class LiteRtModelEngine(private val cacheDir: String) : ModelEngine {
         }
     }
 
+    // LiteRT creates a fresh Conversation per runInference call so there is no
+    // persistent session state to clear. Override provided for API symmetry.
+    override fun resetContext() {
+        Log.i(TAG, "resetContext called for $modelName — no persistent session state to clear")
+    }
+
     override fun close() {
         engine?.close()
         engine = null

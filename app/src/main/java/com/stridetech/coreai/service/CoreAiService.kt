@@ -24,12 +24,15 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 
 private const val TAG = "CoreAiService"
 private val MODEL_EXTENSIONS = setOf("bin", "litertlm", "gguf")
 private const val BUFFER_SIZE = 8 * 1024
+private const val DEFAULT_MODEL_ID = "google_gemma-3-1b-it-Q4_K_M"
 
 @AndroidEntryPoint
 open class CoreAiService : Service() {
@@ -54,6 +57,13 @@ open class CoreAiService : Service() {
     // Acquired via compareAndSet(false, true); released in finally blocks.
     private val isEngineLocked = AtomicBoolean(false)
 
+    // Context isolation mode — default FULL_PROMPT (stateless, backward-compatible).
+    private val contextMode = AtomicReference(ContextMode.FULL_PROMPT)
+
+    // Per-UID session history used only when mode == PER_CLIENT.
+    // Key: Binder.getCallingUid(), Value: mutable turn list ("User: ...\nModel: ...").
+    private val clientSessions = ConcurrentHashMap<Int, MutableList<String>>()
+
     override fun onCreate() {
         super.onCreate()
         engine = LlmEngine(applicationContext)
@@ -70,6 +80,7 @@ open class CoreAiService : Service() {
     override fun onDestroy() {
         serviceScope.cancel()
         callbacks.kill()
+        clientSessions.clear()
         runBlocking { engine.close() }
         super.onDestroy()
     }
@@ -182,6 +193,12 @@ open class CoreAiService : Service() {
             }
             .onSuccess { Log.i(TAG, "Model loaded on GpuArtisan: ${modelFile.nameWithoutExtension}") }
 
+        // Always start with a clean KV cache after loading. The native model instance is
+        // fresh but the service may have accumulated state from a prior session if it was
+        // kept alive by Android between app launches.
+        engine.resetContext()
+        clientSessions.clear()
+
         callback?.onModelStateChanged(engine.isReady, engine.activeModelName() ?: "")
         broadcastModelState()
     }
@@ -222,11 +239,27 @@ open class CoreAiService : Service() {
                 return errorResponse("Prompt must not be empty.", startMs)
             }
 
+            val callerUid = android.os.Binder.getCallingUid()
+            val effectivePrompt = when (contextMode.get()) {
+                ContextMode.PER_CLIENT -> {
+                    val history = clientSessions.getOrPut(callerUid) { mutableListOf() }
+                    history.add("User: $prompt")
+                    history.joinToString("\n")
+                }
+                ContextMode.FULL_PROMPT -> prompt
+            }
+
             serviceScope.launch {
                 val startMs = System.currentTimeMillis()
+                val responseBuilder = StringBuilder()
                 try {
-                    engine.runInferenceStream(prompt).collect { token ->
+                    engine.runInferenceStream(effectivePrompt).collect { token ->
+                        responseBuilder.append(token)
                         broadcastToken(token)
+                    }
+                    if (contextMode.get() == ContextMode.PER_CLIENT) {
+                        val history = clientSessions.getOrPut(callerUid) { mutableListOf() }
+                        history.add("Model: ${responseBuilder.toString().trim()}")
                     }
                     broadcastInferenceComplete(System.currentTimeMillis() - startMs)
                 } catch (ex: Exception) {
@@ -248,26 +281,26 @@ open class CoreAiService : Service() {
 
         override fun loadModel(apiKey: String?, modelId: String?, callback: ICoreAiCallback?) {
             if (!checkApiKey(apiKey, callback)) return
-            if (modelId.isNullOrBlank()) { callback?.onError("modelId must not be empty."); return }
+            val targetModel = if (modelId.isNullOrBlank()) DEFAULT_MODEL_ID else modelId
 
             if (!tryAcquireLock(callback)) return
             serviceScope.launch {
                 try {
                     // Smart cache check inside lock — prevents TOCTOU race on active model state
-                    if (engine.activeModelName() == modelId && engine.isReady) {
-                        callback?.onModelStateChanged(true, modelId)
+                    if (engine.activeModelName() == targetModel && engine.isReady) {
+                        callback?.onModelStateChanged(true, targetModel)
                         return@launch
                     }
 
                     // Unload a different active model before loading the new one
                     val currentActive = engine.activeModelName()
-                    if (currentActive != null && currentActive != modelId) {
+                    if (currentActive != null && currentActive != targetModel) {
                         findModelFile(currentActive)?.let { engine.unload(it.absolutePath) }
                         broadcastModelState()
                     }
 
-                    val modelFile = findModelFile(modelId) ?: run {
-                        callback?.onError("Model file not found for id: $modelId")
+                    val modelFile = findModelFile(targetModel) ?: run {
+                        callback?.onError("Model file not found for id: $targetModel")
                         return@launch
                     }
                     loadModelFile(modelFile, callback)
@@ -298,16 +331,16 @@ open class CoreAiService : Service() {
 
         override fun deleteModel(apiKey: String?, modelId: String?, callback: ICoreAiCallback?) {
             if (!checkApiKey(apiKey, callback)) return
-            if (modelId.isNullOrBlank()) { callback?.onError("modelId must not be empty."); return }
-            if (!modelId.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("modelId contains invalid characters."); return }
+            val targetModel = if (modelId.isNullOrBlank()) DEFAULT_MODEL_ID else modelId
+            if (!targetModel.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("modelId contains invalid characters."); return }
             if (!tryAcquireLock(callback)) return
             serviceScope.launch {
                 try {
-                    val modelFile = findModelFile(modelId)
+                    val modelFile = findModelFile(targetModel)
                     if (modelFile != null) {
                         engine.unload(modelFile.absolutePath)
                         if (!modelFile.delete()) {
-                            callback?.onError("Failed to delete model file for id: $modelId")
+                            callback?.onError("Failed to delete model file for id: $targetModel")
                             return@launch
                         }
                     }
@@ -330,6 +363,39 @@ open class CoreAiService : Service() {
             }
         }
 
+        override fun resetChatContext(apiKey: String?, modelId: String?) {
+            if (!apiKeyManager.isValidKey(apiKey ?: "")) return
+            val callerUid = android.os.Binder.getCallingUid()
+            clientSessions.remove(callerUid)
+            if (!isEngineLocked.compareAndSet(false, true)) {
+                Log.w(TAG, "resetChatContext: engine locked by active process, skipping KV flush")
+                return
+            }
+            try {
+                if (!engine.isReady) {
+                    Log.w(TAG, "resetChatContext: no active engine, nothing to reset")
+                    return
+                }
+                engine.resetContext()
+                Log.i(TAG, "resetChatContext: context flushed uid=$callerUid model=${engine.activeModelName()}")
+            } finally {
+                releaseLock()
+            }
+        }
+
+        override fun setContextMode(apiKey: String?, mode: String?) {
+            if (!apiKeyManager.isValidKey(apiKey ?: "")) return
+            val newMode = ContextMode.fromString(mode ?: "")
+            contextMode.set(newMode)
+            if (newMode == ContextMode.FULL_PROMPT) clientSessions.clear()
+            Log.i(TAG, "Context mode set to $newMode")
+        }
+
+        override fun getContextMode(apiKey: String?): String {
+            if (!apiKeyManager.isValidKey(apiKey ?: "")) return ContextMode.FULL_PROMPT.name
+            return contextMode.get().name
+        }
+
         // ── Catalog download ──────────────────────────────────────────────────
 
         override fun downloadCatalogModel(
@@ -339,39 +405,39 @@ open class CoreAiService : Service() {
             callback: ICoreAiCallback?
         ) {
             if (!checkApiKey(apiKey, callback)) return
-            if (modelId.isNullOrBlank()) { callback?.onError("modelId must not be empty."); return }
+            val targetModel = if (modelId.isNullOrBlank()) DEFAULT_MODEL_ID else modelId
             if (downloadUrl.isNullOrBlank()) { callback?.onError("downloadUrl must not be empty."); return }
             if (!downloadUrl.startsWith("https://")) { callback?.onError("downloadUrl must use HTTPS."); return }
-            if (!modelId.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("modelId contains invalid characters."); return }
+            if (!targetModel.matches(Regex("[a-zA-Z0-9_-]+"))) { callback?.onError("modelId contains invalid characters."); return }
 
             serviceScope.launch {
                 val dir = modelsDir() ?: run {
-                    callback?.onModelTransferError(modelId!!, "External storage unavailable.")
+                    callback?.onModelTransferError(targetModel, "External storage unavailable.")
                     return@launch
                 }
 
                 // Smart cache: file already on disk — skip download entirely
                 val cachedFile = dir.listFiles()?.firstOrNull {
-                    it.nameWithoutExtension == modelId!! && it.extension in MODEL_EXTENSIONS
+                    it.nameWithoutExtension == targetModel && it.extension in MODEL_EXTENSIONS
                 }
                 if (cachedFile != null) {
-                    Log.i(TAG, "Cache hit for $modelId, skipping download")
-                    callback?.onModelTransferComplete(modelId!!, cachedFile.absolutePath)
+                    Log.i(TAG, "Cache hit for $targetModel, skipping download")
+                    callback?.onModelTransferComplete(targetModel, cachedFile.absolutePath)
                     return@launch
                 }
 
-                val tmpFile = File(dir, "$modelId.tmp")
+                val tmpFile = File(dir, "$targetModel.tmp")
                 try {
-                    val request = Request.Builder().url(downloadUrl!!).build()
+                    val request = Request.Builder().url(downloadUrl).build()
                     okHttpClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) {
                             tmpFile.delete()
-                            callback?.onModelTransferError(modelId!!, "HTTP ${response.code}: ${response.message}")
+                            callback?.onModelTransferError(targetModel, "HTTP ${response.code}: ${response.message}")
                             return@launch
                         }
                         val body = response.body ?: run {
                             tmpFile.delete()
-                            callback?.onModelTransferError(modelId!!, "Empty response body.")
+                            callback?.onModelTransferError(targetModel, "Empty response body.")
                             return@launch
                         }
                         val totalBytes = body.contentLength()
@@ -387,7 +453,7 @@ open class CoreAiService : Service() {
                                     downloaded += read
                                     if (totalBytes > 0) {
                                         val percent = ((downloaded * 100) / totalBytes).toInt()
-                                        callback?.onModelTransferProgress(modelId!!, percent)
+                                        callback?.onModelTransferProgress(targetModel, percent)
                                     }
                                 }
                             }
@@ -396,19 +462,19 @@ open class CoreAiService : Service() {
 
                     val ext = downloadUrl.substringAfterLast('.', "litertlm")
                         .takeIf { it in MODEL_EXTENSIONS } ?: "litertlm"
-                    val finalFile = File(dir, "$modelId.$ext")
+                    val finalFile = File(dir, "$targetModel.$ext")
                     if (tmpFile.renameTo(finalFile)) {
-                        callback?.onModelTransferProgress(modelId!!, 100)
-                        callback?.onModelTransferComplete(modelId!!, finalFile.absolutePath)
+                        callback?.onModelTransferProgress(targetModel, 100)
+                        callback?.onModelTransferComplete(targetModel, finalFile.absolutePath)
                         Log.i(TAG, "Download complete: ${finalFile.absolutePath}")
                     } else {
                         tmpFile.delete()
-                        callback?.onModelTransferError(modelId!!, "Failed to finalize downloaded file.")
+                        callback?.onModelTransferError(targetModel, "Failed to finalize downloaded file.")
                     }
                 } catch (e: Exception) {
                     tmpFile.delete()
-                    Log.e(TAG, "Download failed for $modelId", e)
-                    callback?.onModelTransferError(modelId!!, e.message ?: "Unknown download error.")
+                    Log.e(TAG, "Download failed for $targetModel", e)
+                    callback?.onModelTransferError(targetModel, e.message ?: "Unknown download error.")
                 }
             }
         }
@@ -523,7 +589,18 @@ open class CoreAiService : Service() {
         // ── Callback registration ─────────────────────────────────────────────
 
         override fun registerCallback(callback: ICoreAiCallback?) {
-            if (callback != null) callbacks.register(callback)
+            if (callback != null) {
+                callbacks.register(callback)
+                val uid = android.os.Binder.getCallingUid()
+                clientSessions.remove(uid)
+                // Flush the native KV cache whenever a new client connects so stale
+                // conversation state from a prior session never bleeds into this one.
+                // The engine may still be loaded from a previous app launch without
+                // ever calling loadModelFile again, so this is the only reliable place.
+                if (engine.isReady && !isEngineLocked.get()) {
+                    serviceScope.launch { engine.resetContext() }
+                }
+            }
         }
 
         override fun unregisterCallback(callback: ICoreAiCallback?) {

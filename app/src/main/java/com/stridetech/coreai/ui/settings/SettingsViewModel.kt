@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 
 data class SettingsUiState(
-    val apiKeys: List<String> = emptyList()
+    val apiKeys: List<String> = emptyList(),
+    val hfToken: String? = null,
+    val hfTokenSaved: Boolean = false
 )
 
 @HiltViewModel
@@ -40,7 +42,21 @@ class SettingsViewModel @Inject constructor(
         reload()
     }
 
+    fun saveHuggingFaceToken(token: String) {
+        apiKeyManager.saveHuggingFaceToken(token.trim())
+        _uiState.update { it.copy(hfToken = token.trim(), hfTokenSaved = true) }
+    }
+
+    fun clearHfTokenSavedFlag() {
+        _uiState.update { it.copy(hfTokenSaved = false) }
+    }
+
     private fun reload() {
-        _uiState.update { it.copy(apiKeys = apiKeyManager.getExistingKeys()) }
+        _uiState.update {
+            it.copy(
+                apiKeys = apiKeyManager.getExistingKeys(),
+                hfToken = apiKeyManager.getHuggingFaceToken()
+            )
+        }
     }
 }
