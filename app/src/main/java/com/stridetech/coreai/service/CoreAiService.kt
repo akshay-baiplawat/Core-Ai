@@ -11,6 +11,7 @@ import com.google.ai.edge.litertlm.Backend
 import com.google.gson.Gson
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
+import com.stridetech.coreai.hub.LocalCatalogDataSource
 import com.stridetech.coreai.ml.LlmEngine
 import com.stridetech.coreai.security.ApiKeyManager
 import dagger.hilt.android.AndroidEntryPoint
@@ -32,8 +33,30 @@ import javax.inject.Inject
 private const val TAG = "CoreAiService"
 private val MODEL_EXTENSIONS = setOf("bin", "litertlm", "gguf")
 private const val BUFFER_SIZE = 8 * 1024
-private const val DEFAULT_MODEL_ID = "google_gemma-3-1b-it-Q4_K_M"
+private const val DEFAULT_MODEL_ID = "gemma-3-1b-q4"
 
+// Pre-allocated fallback JSON — returned when even Gson fails (e.g. extreme OOM).
+private const val FALLBACK_MODELS_JSON = """{"models":[],"error":"Internal error."}"""
+private const val FALLBACK_ACTIVE_JSON = """{"modelId":null,"isReady":false,"error":"Internal error."}"""
+private const val FALLBACK_LOADED_JSON = """{"models":[],"error":"Internal error."}"""
+
+/**
+ * Headless background service that hosts the on-device LLM engine and exposes it to
+ * client apps via the [ICoreAiInterface] AIDL contract.
+ *
+ * Security model:
+ *   - Every AIDL call validates the caller's API key via [ApiKeyManager] before execution.
+ *   - [downloadCatalogModel] enforces HTTPS-only URLs and an alphanumeric modelId regex
+ *     ([a-zA-Z0-9_-]+) to prevent SSRF and path-traversal attacks.
+ *   - [importLocalModel] enforces the same alphanumeric regex on targetModelId.
+ *
+ * Concurrency model:
+ *   - A single [AtomicBoolean] (isEngineLocked) acts as a binary mutex for all
+ *     state-mutating operations (load, unload, delete, inference). CAS acquisition
+ *     fails fast and surfaces contention to the caller via [ICoreAiCallback.onError].
+ *   - Context isolation mode (FULL_PROMPT / PER_CLIENT) is stored in an [AtomicReference]
+ *     and can be changed at runtime without acquiring the engine lock.
+ */
 @AndroidEntryPoint
 open class CoreAiService : Service() {
 
@@ -45,6 +68,7 @@ open class CoreAiService : Service() {
 
     @Inject lateinit var apiKeyManager: ApiKeyManager
     @Inject lateinit var okHttpClient: OkHttpClient
+    @Inject lateinit var localCatalogDataSource: LocalCatalogDataSource
 
     private val callbacks = RemoteCallbackList<ICoreAiCallback>()
 
@@ -64,8 +88,14 @@ open class CoreAiService : Service() {
     // Key: Binder.getCallingUid(), Value: mutable turn list ("User: ...\nModel: ...").
     private val clientSessions = ConcurrentHashMap<Int, MutableList<String>>()
 
+    // Resolved once on the main thread in onCreate() to avoid null returns from
+    // getExternalFilesDir() when called on Binder pool threads early in the lifecycle.
+    @Volatile private var modelsDirCache: File? = null
+
     override fun onCreate() {
         super.onCreate()
+        modelsDirCache = getExternalFilesDir("models")?.also { it.mkdirs() }
+        Log.d(TAG, "onCreate: modelsDirCache=${modelsDirCache?.absolutePath}, exists=${modelsDirCache?.exists()}")
         engine = LlmEngine(applicationContext)
         loadWithFallback()
     }
@@ -205,7 +235,8 @@ open class CoreAiService : Service() {
 
     // ── Directory / lookup helpers ────────────────────────────────────────────
 
-    private fun modelsDir(): File? = getExternalFilesDir("models")?.also { it.mkdirs() }
+    private fun modelsDir(): File? =
+        modelsDirCache ?: getExternalFilesDir("models")?.also { it.mkdirs(); modelsDirCache = it }
 
     private fun findModelFile(modelId: String): File? =
         modelsDir()?.listFiles()?.firstOrNull {
@@ -261,7 +292,9 @@ open class CoreAiService : Service() {
                         val history = clientSessions.getOrPut(callerUid) { mutableListOf() }
                         history.add("Model: ${responseBuilder.toString().trim()}")
                     }
-                    broadcastInferenceComplete(System.currentTimeMillis() - startMs)
+                    val latencyMs = System.currentTimeMillis() - startMs
+                    broadcastInferenceResult(successResponse(responseBuilder.toString(), latencyMs))
+                    broadcastInferenceComplete(latencyMs)
                 } catch (ex: Exception) {
                     Log.e(TAG, "Inference failed", ex)
                     broadcastInferenceResult(errorResponse(ex.message ?: "Unknown error", startMs))
@@ -563,27 +596,50 @@ open class CoreAiService : Service() {
         // ── State queries ─────────────────────────────────────────────────────
 
         override fun getActiveModel(apiKey: String?): String {
-            if (!apiKeyManager.isValidKey(apiKey ?: ""))
-                return gson.toJson(mapOf("modelId" to null, "isReady" to false, "error" to "Invalid API key."))
-            return gson.toJson(
-                mapOf("modelId" to engine.activeModelName(), "isReady" to engine.isReady, "error" to null)
-            )
+            Log.d(TAG, "getActiveModel: entered, apiKey=${apiKey?.take(6)}")
+            return try {
+                if (!apiKeyManager.isValidKey(apiKey ?: ""))
+                    return gson.toJson(mapOf("modelId" to null, "isReady" to false, "error" to "Invalid API key."))
+                gson.toJson(mapOf("modelId" to engine.activeModelName(), "isReady" to engine.isReady, "error" to null))
+            } catch (t: Throwable) {
+                Log.e(TAG, "getActiveModel failed [${t::class.java.simpleName}]", t)
+                runCatching { gson.toJson(mapOf("modelId" to null, "isReady" to false, "error" to (t.message ?: "Unknown error."))) }
+                    .getOrDefault(FALLBACK_ACTIVE_JSON)
+            }
         }
 
         override fun getDownloadedModels(apiKey: String?): String {
-            if (!apiKeyManager.isValidKey(apiKey ?: ""))
-                return gson.toJson(mapOf("models" to emptyList<Any>(), "error" to "Invalid API key."))
-            val files = modelsDir()?.listFiles()
-                ?.filter { it.extension in MODEL_EXTENSIONS }
-                ?.map { mapOf("modelId" to it.nameWithoutExtension, "path" to it.absolutePath, "sizeBytes" to it.length()) }
-                ?: emptyList()
-            return gson.toJson(mapOf("models" to files, "error" to null))
+            Log.d(TAG, "getDownloadedModels: entered, apiKey=${apiKey?.take(6)}, modelsDirCache=$modelsDirCache")
+            return try {
+                if (!apiKeyManager.isValidKey(apiKey ?: ""))
+                    return gson.toJson(mapOf("models" to emptyList<Any>(), "error" to "Invalid API key."))
+                val dir = modelsDir()
+                Log.d(TAG, "getDownloadedModels: dir=${dir?.absolutePath}, exists=${dir?.exists()}, fileCount=${dir?.listFiles()?.size}")
+                val files = dir?.listFiles()
+                    ?.filter { it.isFile && it.extension in MODEL_EXTENSIONS }
+                    ?.map { mapOf("modelId" to it.nameWithoutExtension, "path" to it.absolutePath, "sizeBytes" to it.length()) }
+                    ?: emptyList()
+                val result = gson.toJson(mapOf("models" to files, "error" to if (dir == null) "External storage unavailable." else null))
+                Log.d(TAG, "getDownloadedModels: returning ${files.size} model(s)")
+                result
+            } catch (t: Throwable) {
+                Log.e(TAG, "getDownloadedModels failed [${t::class.java.simpleName}]", t)
+                runCatching { gson.toJson(mapOf("models" to emptyList<Any>(), "error" to (t.message ?: "Unknown error listing models."))) }
+                    .getOrDefault(FALLBACK_MODELS_JSON)
+            }
         }
 
         override fun getLoadedModels(apiKey: String?): String {
-            if (!apiKeyManager.isValidKey(apiKey ?: ""))
-                return gson.toJson(mapOf("models" to emptyList<String>(), "error" to "Invalid API key."))
-            return gson.toJson(mapOf("models" to engine.loadedModelNames(), "error" to null))
+            Log.d(TAG, "getLoadedModels: entered, apiKey=${apiKey?.take(6)}")
+            return try {
+                if (!apiKeyManager.isValidKey(apiKey ?: ""))
+                    return gson.toJson(mapOf("models" to emptyList<String>(), "error" to "Invalid API key."))
+                gson.toJson(mapOf("models" to engine.loadedModelNames(), "error" to null))
+            } catch (t: Throwable) {
+                Log.e(TAG, "getLoadedModels failed [${t::class.java.simpleName}]", t)
+                runCatching { gson.toJson(mapOf("models" to emptyList<String>(), "error" to (t.message ?: "Unknown error."))) }
+                    .getOrDefault(FALLBACK_LOADED_JSON)
+            }
         }
 
         // ── Callback registration ─────────────────────────────────────────────
@@ -606,12 +662,27 @@ open class CoreAiService : Service() {
         override fun unregisterCallback(callback: ICoreAiCallback?) {
             if (callback != null) callbacks.unregister(callback)
         }
+
+        override fun getCatalog(apiKey: String?): String {
+            if (!apiKeyManager.isValidKey(apiKey ?: ""))
+                return gson.toJson(mapOf("models" to emptyList<Any>(), "error" to "Invalid API key."))
+            return try {
+                val items = localCatalogDataSource.load()
+                gson.toJson(mapOf("models" to items, "error" to null))
+            } catch (t: Throwable) {
+                Log.e(TAG, "getCatalog failed", t)
+                gson.toJson(mapOf("models" to emptyList<Any>(), "error" to (t.message ?: "Unknown error.")))
+            }
+        }
     }
 
     // ── Response builders ─────────────────────────────────────────────────────
 
     private fun pendingResponse(startMs: Long): String =
         gson.toJson(mapOf("completion" to null, "latency_ms" to (System.currentTimeMillis() - startMs), "success" to true, "pending" to true, "error" to null))
+
+    private fun successResponse(completion: String, latencyMs: Long): String =
+        gson.toJson(mapOf("completion" to completion, "latency_ms" to latencyMs, "success" to true, "pending" to false, "error" to null))
 
     private fun errorResponse(message: String, startMs: Long): String =
         gson.toJson(mapOf("completion" to null, "latency_ms" to (System.currentTimeMillis() - startMs), "success" to false, "pending" to false, "error" to message))

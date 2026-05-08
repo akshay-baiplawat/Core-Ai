@@ -14,7 +14,7 @@ Core AI runs as a bound Android service (`CoreAiService`). It has no mandatory U
 
 ### Local Inference — Privacy by Default
 
-All inference is executed on-device using [LiteRT](https://ai.google.dev/edge/litert) (Google's edge LLM runtime) and MediaPipe GenAI. Prompts and completions are never transmitted to any server.
+All inference is executed on-device using [LiteRT](https://ai.google.dev/edge/litert) (Google's edge LLM runtime), GGUF quantized models via llama.cpp/JNI, and MediaPipe GenAI. Prompts and completions are never transmitted to any server.
 
 ### Multi-Tenant Engine Lock
 
@@ -54,6 +54,7 @@ The host app includes a browsable model catalog, one-tap downloads with progress
 │   ┌──────────────▼──────────────────┐   │
 │   │  LlmEngine / ModelEngineFactory │   │
 │   │  • LiteRT backend (GPU-first)   │   │
+│   │  • GGUF backend (llama.cpp/JNI) │   │
 │   │  • MediaPipe backend (fallback) │   │
 │   └─────────────────────────────────┘   │
 └─────────────────────────────────────────┘
@@ -139,6 +140,8 @@ val callback = object : ICoreAiCallback.Stub() {
         // {"completion":"...","latency_ms":312,"success":true,"error":null}
         Log.d("CoreAI", resultJson)
     }
+    override fun onInferenceToken(token: String?) {}        // streaming token
+    override fun onInferenceComplete(latencyMs: Long) {}    // fires after last token
     override fun onModelStateChanged(isReady: Boolean, activeModelName: String?) {}
     override fun onError(errorMessage: String?) {}
     override fun onModelTransferProgress(modelId: String?, percent: Int) {}
@@ -176,21 +179,75 @@ val loadedJson     = coreAi?.getLoadedModels(apiKey)
 ### 6. Manage models
 
 ```kotlin
-// Download from URL with progress callbacks
+// Download from catalog URL with progress callbacks.
+// ⚠ SECURITY CONSTRAINTS: downloadUrl must start with "https://"; modelId must match
+// [a-zA-Z0-9_-]+. Violations are rejected immediately.
+// Pass "" for modelId to use the system default (gemma-3-1b-q4).
 coreAi?.downloadCatalogModel(apiKey, "gemma-2b", "https://example.com/gemma-2b.bin", callback)
 
-// Import from device storage (Storage Access Framework URI)
-coreAi?.importLocalModel(apiKey, fileUri, "my-model", "gguf", callback)
+// Import from device storage (Storage Access Framework URI).
+// Supported engineType values: "GGUF", "LITERT", "BIN".
+coreAi?.importLocalModel(apiKey, fileUri, "my-model", "GGUF", callback)
 
-// Load into RAM, then make active
+// Load into RAM, then make active. Pass "" for modelId to load the default model.
 coreAi?.loadModel(apiKey, "gemma-2b", callback)
 coreAi?.setActiveModel(apiKey, "gemma-2b")
 
 // Unload to free memory
 coreAi?.unloadModel(apiKey, "gemma-2b", callback)
+
+// Safe deletion — acquires engine lock, unloads from RAM, then deletes file from disk.
+coreAi?.deleteModel(apiKey, "gemma-2b", callback)
+
+// Browse the bundled model catalog
+val catalogJson = coreAi?.getCatalog(apiKey)
+// {"models":[{"id":"gemma-3-1b-q4","name":"...","download_url":"...","engine_type":"gguf"}],"error":null}
 ```
 
-### 7. Clean up
+### 7. Context Isolation Mode
+
+```kotlin
+// FULL_PROMPT (default) — service is stateless; client sends full conversation history each call.
+// PER_CLIENT — service tracks history per caller UID; send only the latest user message.
+coreAi?.setContextMode(apiKey, "PER_CLIENT")
+
+// Read the active mode ("FULL_PROMPT" or "PER_CLIENT")
+val mode = coreAi?.getContextMode(apiKey)
+
+// Flush conversation history for this session.
+// PER_CLIENT: clears only this app's session. FULL_PROMPT: also flushes the native KV cache.
+coreAi?.resetChatContext(apiKey, modelId)
+```
+
+### 8. Hugging Face Integration
+
+Core AI supports downloading GGUF models directly from Hugging Face using the resolve endpoint.
+
+```kotlin
+// Public HF models — pass the resolve URL directly (no token needed).
+// Same security constraints apply: HTTPS only, modelId must match [a-zA-Z0-9_-]+.
+coreAi?.downloadCatalogModel(
+    apiKey,
+    "gemma-hf",   // modelId
+    "https://huggingface.co/bartowski/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
+    callback
+)
+
+// Gated HF models — your app must download with an HF Bearer token, then import via GGUF.
+// Core AI cannot attach your personal HF token to outbound requests.
+val request = Request.Builder()
+    .url("https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B.gguf")
+    .addHeader("Authorization", "Bearer $userHfToken")
+    .build()
+okHttpClient.newCall(request).execute().use { response ->
+    val file = File(cacheDir, "llama-3-2-1b.gguf")
+    file.outputStream().use { response.body!!.byteStream().copyTo(it) }
+    val uri = FileProvider.getUriForFile(context, "$packageName.provider", file)
+    coreAi?.importLocalModel(apiKey, uri, "llama-3-2-1b", "GGUF", callback)
+}
+```
+
+### 9. Clean up
 
 ```kotlin
 // Always unregister before unbinding
@@ -217,6 +274,7 @@ context.unbindService(connection)
 | Component | Library / Framework |
 | --- | --- |
 | On-device inference | Google LiteRT (`com.google.ai.edge:litertlm-android`) |
+| GGUF inference | llama.cpp via JNI (`.gguf` quantized models) |
 | Alternate model format | MediaPipe GenAI (`com.google.mediapipe:tasks-genai`) |
 | IPC | Android AIDL / Binder |
 | Encrypted storage | AndroidX Security Crypto (AES-256 GCM) |

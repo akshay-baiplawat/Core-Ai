@@ -147,6 +147,8 @@ then call runInference(apiKey, prompt). Obtain an API key from the Core AI Setti
           val completion = json.optString("completion")
           val latencyMs  = json.optLong("latency_ms")
       }
+      override fun onInferenceToken(token: String?) {}       // streaming token
+      override fun onInferenceComplete(latencyMs: Long) {}   // fires after last token
       override fun onModelTransferProgress(modelId: String?, percent: Int) {}
       override fun onModelTransferComplete(modelId: String?, filePath: String?) {}
       override fun onModelTransferError(modelId: String?, errorMessage: String?) {}
@@ -183,6 +185,10 @@ Use the JSON state query methods to inspect what is active and what is available
 
 Download official catalog models or import your own GGUF / LiteRT files from local storage.
 
+  // Browse the bundled model catalog
+  val catalogJson = coreAi.getCatalog(apiKey)
+  // { "models": [{ "id": "gemma-3-1b-q4", "name": "...", "download_url": "...", "engine_type": "gguf" }], "error": null }
+
   // Download from URL
   //
   // SECURITY CONSTRAINTS — requests violating these are rejected immediately:
@@ -192,7 +198,7 @@ Download official catalog models or import your own GGUF / LiteRT files from loc
   //                 path traversal attacks on the engine's internal storage sandbox.
   //
   // DEFAULT MODEL — pass "" or null for modelId to automatically use the
-  //   system default model (google_gemma-3-1b-it-Q4_K_M).
+  //   system default model (gemma-3-1b-q4).
   coreAi.downloadCatalogModel(apiKey, "gemma-2b", "https://example.com/models/gemma-2b.bin", myCallback)
   // Callbacks: onModelTransferProgress("gemma-2b", 0..100) → onModelTransferComplete(...)
 
@@ -210,7 +216,7 @@ Download official catalog models or import your own GGUF / LiteRT files from loc
 After a model file is on disk, use the lifecycle methods to control what lives in RAM.
 
   // Pass "" or null for modelId to load/delete the system default model
-  // (google_gemma-3-1b-it-Q4_K_M) without specifying an id explicitly.
+  // (gemma-3-1b-q4) without specifying an id explicitly.
   coreAi.loadModel(apiKey, "gemma-2b", myCallback)   // load into RAM
   coreAi.setActiveModel(apiKey, "gemma-2b")           // route runInference() here
   coreAi.runInference(apiKey, prompt)                 // produces onInferenceResult
@@ -501,6 +507,14 @@ private val myCallback = object : ICoreAiCallback.Stub() {
         // Update UI with completion text
     }
 
+    override fun onInferenceToken(token: String?) {
+        // Streaming token — append to a buffer for live-streaming UI
+    }
+
+    override fun onInferenceComplete(latencyMs: Long) {
+        // Fires after the last token; latencyMs is total inference time
+    }
+
     // ── Transfer progress callbacks ────────────────────────────────────
 
     override fun onModelTransferProgress(modelId: String?, percent: Int) {
@@ -579,6 +593,21 @@ if (!isValid) {
             )
             Spacer(Modifier.height(8.dp))
             CodeSnippetCard(
+                title = "Kotlin — Browse the bundled catalog",
+                code = """// Returns the list of models bundled in the Core AI catalog.
+// Use the returned download_url with downloadCatalogModel() to fetch a specific model.
+val catalogJson = coreAi.getCatalog(apiKey)
+// {
+//   "models": [
+//     { "id": "gemma-3-1b-q4", "name": "Gemma 3 1B Instruct (Q4_K_M)",
+//       "download_url": "https://huggingface.co/.../gemma-3-1b-it-Q4_K_M.gguf",
+//       "file_size": 806058496, "engine_type": "gguf" }
+//   ],
+//   "error": null
+// }"""
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
                 title = "Kotlin — Download a catalog model",
                 code = """// Triggers a background download; progress arrives on the callback.
 // Completes immediately (cache hit) if the file already exists on disk.
@@ -591,7 +620,7 @@ if (!isValid) {
 //                 path traversal attacks on the engine's internal storage sandbox.
 //
 // ℹ DEFAULT MODEL — pass "" or null for modelId to automatically use the
-//   system default model (google_gemma-3-1b-it-Q4_K_M).
+//   system default model (gemma-3-1b-q4).
 coreAi.downloadCatalogModel(
     apiKey,
     "gemma-2b",                                // modelId — used in all subsequent calls
@@ -649,7 +678,7 @@ fun importModel(uri: Uri) {
                 code = """// 1. Load a model into RAM (required before inference)
 //    Result delivered via onModelStateChanged or onError on the callback.
 //    Pass "" or null for modelId to load the system default model
-//    (google_gemma-3-1b-it-Q4_K_M) without specifying an id explicitly.
+//    (gemma-3-1b-q4) without specifying an id explicitly.
 coreAi.loadModel(apiKey, "gemma-2b", myCallback)
 
 // 2. Promote a loaded model to the active inference slot

@@ -23,6 +23,7 @@ interface ICoreAiInterface {
      * Load a model by ID from the local models directory.
      * No-op (fires onModelStateChanged immediately) when the model is already active.
      * Unloads the current model first if a different one is in memory.
+     * Pass modelId="" to load the system default model (gemma-3-1b-q4).
      * Result delivered via onModelStateChanged or onError on the supplied callback.
      */
     void loadModel(String apiKey, String modelId, ICoreAiCallback callback);
@@ -36,6 +37,8 @@ interface ICoreAiInterface {
     /**
      * Atomically unload a model (if loaded) then delete its file from disk.
      * Acquires the EngineLock to prevent concurrent inference during deletion.
+     * Pass modelId="" to delete the system default model (gemma-3-1b-q4).
+     * modelId must match [a-zA-Z0-9_-]+ — other characters are rejected immediately.
      * Result delivered via onModelStateChanged or onError on the supplied callback.
      */
     void deleteModel(String apiKey, String modelId, ICoreAiCallback callback);
@@ -49,13 +52,21 @@ interface ICoreAiInterface {
      * Download a model from a URL into the local models directory.
      * Fires onModelTransferComplete immediately (cache hit) if the file already
      * exists. Progress reported via onModelTransferProgress (0–100).
+     * Pass modelId="" to use the system default model id (gemma-3-1b-q4).
+     *
+     * Security constraints (violations fire onModelTransferError immediately):
+     *   downloadUrl MUST start with "https://" — plain HTTP is rejected (SSRF prevention).
+     *   modelId MUST match [a-zA-Z0-9_-]+ — other characters are rejected to prevent
+     *   path traversal into the engine's storage sandbox.
      */
     void downloadCatalogModel(String apiKey, String modelId, String downloadUrl, ICoreAiCallback callback);
 
     /**
      * Import a model from a content URI (e.g. Storage Access Framework picker).
      * Streams bytes to a .tmp file, then atomically renames on success.
-     * engineType hint: "litertlm" | "gguf" — resolves the output file extension.
+     * targetModelId must match [a-zA-Z0-9_-]+ — other characters are rejected immediately.
+     * engineType (case-insensitive): "gguf" | "litertlm" | "bin" — resolves the output
+     * file extension. Defaults to "litertlm" if the URI has no recognised extension.
      */
     void importLocalModel(String apiKey, in Uri uri, String targetModelId, String engineType, ICoreAiCallback callback);
 
@@ -95,4 +106,10 @@ interface ICoreAiInterface {
 
     void registerCallback(ICoreAiCallback callback);
     void unregisterCallback(ICoreAiCallback callback);
+
+    /**
+     * Returns the bundled model catalog as a JSON string.
+     * Format: {"models":[{"id":"...","name":"...","download_url":"...","file_size":0,"engine_type":"gguf"}],"error":null}
+     */
+    String getCatalog(String apiKey);
 }
