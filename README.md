@@ -55,7 +55,7 @@ The host app includes a browsable model catalog, one-tap downloads with progress
 │   │  LlmEngine / ModelEngineFactory │   │
 │   │  • LiteRT backend (GPU-first)   │   │
 │   │  • GGUF backend (llama.cpp/JNI) │   │
-│   │  • MediaPipe backend (fallback) │   │
+│   │  • MediaPipe backend (.bin/.task)│   │
 │   └─────────────────────────────────┘   │
 └─────────────────────────────────────────┘
 
@@ -186,8 +186,8 @@ val loadedJson     = coreAi?.getLoadedModels(apiKey)
 coreAi?.downloadCatalogModel(apiKey, "gemma-2b", "https://example.com/gemma-2b.bin", callback)
 
 // Import from device storage (Storage Access Framework URI).
-// Supported engineType values: "GGUF", "LITERT", "BIN".
-coreAi?.importLocalModel(apiKey, fileUri, "my-model", "GGUF", callback)
+// Supported engineType values (case-insensitive): "gguf" | "litertlm" | "bin".
+coreAi?.importLocalModel(apiKey, fileUri, "my-model", "gguf", callback)
 
 // Load into RAM, then make active. Pass "" for modelId to load the default model.
 coreAi?.loadModel(apiKey, "gemma-2b", callback)
@@ -219,7 +219,42 @@ val mode = coreAi?.getContextMode(apiKey)
 coreAi?.resetChatContext(apiKey, modelId)
 ```
 
-### 8. Hugging Face Integration
+### 8. Custom Chat Templates
+
+By default Core AI auto-detects the correct prompt format from the model name. Catalog model IDs
+(`gemma-3-1b-q4`, `gemma-3-4b-q4`, `llama-3.2-1b-instruct`, `phi-3.5-mini-q4`) are resolved by
+exact ID match first; other names fall back to keyword heuristics (contains `"llama"` → Llama 3
+tokens, contains `"gemma"` → Gemma tokens, anything else → ChatML).
+
+Use `setCustomChatTemplate` to override for a specific model ID — useful for fine-tuned variants or
+models not yet in the built-in router.
+
+```kotlin
+// All eight fields are optional — missing ones default to "".
+val templateJson = """
+  {
+    "bosToken":               "",
+    "systemPromptPrefix":     "[INST] ",
+    "systemPromptSuffix":     " [/INST]\n",
+    "userMessagePrefix":      "[INST] ",
+    "userMessageSuffix":      " [/INST]\n",
+    "assistantMessagePrefix": "",
+    "assistantMessageSuffix": "\n",
+    "stopToken":              "</s>"
+  }
+""".trimIndent()
+
+// Register — modelId must match the id used in loadModel() / setActiveModel().
+// Takes effect on the next runInference() call.
+coreAi?.setCustomChatTemplate(apiKey, "my-mistral-model", templateJson)
+
+// Clear — pass "" to revert a model back to auto-detection.
+coreAi?.setCustomChatTemplate(apiKey, "my-mistral-model", "")
+```
+
+---
+
+### 9. Hugging Face Integration
 
 Core AI supports downloading GGUF models directly from Hugging Face using the resolve endpoint.
 
@@ -247,7 +282,7 @@ okHttpClient.newCall(request).execute().use { response ->
 }
 ```
 
-### 9. Clean up
+### 10. Clean up
 
 ```kotlin
 // Always unregister before unbinding

@@ -203,11 +203,11 @@ Download official catalog models or import your own GGUF / LiteRT files from loc
   // Callbacks: onModelTransferProgress("gemma-2b", 0..100) → onModelTransferComplete(...)
 
   // Import from device storage (Storage Access Framework URI)
-  // Supported engineType values:
-  //   "GGUF"   — GGUF-format models (llama.cpp-compatible, e.g. .gguf files)
-  //   "LITERT" — LiteRT / TensorFlow Lite flat-buffer models
-  //   "BIN"    — Generic binary format
-  coreAi.importLocalModel(apiKey, uri, "my-custom-model", "GGUF", myCallback)
+  // Supported engineType values (case-insensitive):
+  //   "gguf"     — GGUF-format models (llama.cpp-compatible, e.g. .gguf files)
+  //   "litertlm" — LiteRT / TensorFlow Lite flat-buffer models
+  //   "bin"      — Generic binary format
+  coreAi.importLocalModel(apiKey, uri, "my-custom-model", "gguf", myCallback)
 
 ---
 
@@ -223,7 +223,7 @@ After a model file is on disk, use the lifecycle methods to control what lives i
   coreAi.unloadModel(apiKey, "gemma-2b", myCallback)  // free RAM when done
 
   // Safe deletion — acquires engine lock, unloads from RAM, then deletes file from disk.
-  // Prevents TOCTOU file-in-use races. Result fires onModelTransferComplete or onError.
+  // Prevents TOCTOU file-in-use races. Result fires onModelStateChanged or onError.
   coreAi.deleteModel(apiKey, "gemma-2b", myCallback)
 
 ---
@@ -301,7 +301,7 @@ gated (access-restricted) models, using the HF Resolve endpoint.
       file.outputStream().use { response.body!!.byteStream().copyTo(it) }
 
       // Step 2 — import the saved file into Core AI via FileProvider URI.
-      // "GGUF" is a fully supported engineType alongside "LITERT" and "BIN".
+      // "GGUF" is a fully supported engineType alongside "litertlm" and "bin".
       val uri = FileProvider.getUriForFile(context, "${'$'}{packageName}.provider", file)
       coreAi.importLocalModel(
           apiKey,
@@ -319,10 +319,11 @@ gated (access-restricted) models, using the HF Resolve endpoint.
 
 Override the automatic prompt template for any model ID. By default Core AI
 auto-detects the correct chat template from the model name (Llama 3, Gemma, or
-ChatML as the generic fallback). Use setCustomChatTemplate to inject a fully
-custom template — useful for models not yet in the router or for fine-tuned
-variants that use a non-standard format. All eight fields are optional and
-default to an empty string when omitted.
+ChatML as the generic fallback). Catalog IDs gemma-3-1b-q4, gemma-3-4b-q4,
+llama-3.2-1b-instruct, and phi-3.5-mini-q4 are resolved by exact ID match first.
+Use setCustomChatTemplate to inject a fully custom template — useful for models
+not yet in the router or for fine-tuned variants that use a non-standard format.
+All eight fields are optional and default to an empty string when omitted.
 
   // Template JSON — all fields optional, default to ""
   {
@@ -678,16 +679,16 @@ val pickModelLauncher = registerForActivityResult(
 pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
 
 // 2. Call importLocalModel — the service streams the file into its sandbox
-//    Supported engineType values:
-//      "GGUF"   — GGUF-format models (llama.cpp-compatible, e.g. .gguf files)
-//      "LITERT" — LiteRT / TensorFlow Lite flat-buffer models
-//      "BIN"    — Generic binary format
+//    Supported engineType values (case-insensitive):
+//      "gguf"     — GGUF-format models (llama.cpp-compatible, e.g. .gguf files)
+//      "litertlm" — LiteRT / TensorFlow Lite flat-buffer models
+//      "bin"      — Generic binary format
 fun importModel(uri: Uri) {
     coreAi.importLocalModel(
         apiKey,
         uri,
         "my-custom-model", // targetModelId used in subsequent calls
-        "GGUF",            // engineType: "GGUF", "LITERT", or "BIN"
+        "gguf",            // engineType: "gguf", "litertlm", or "bin" (case-insensitive)
         myCallback
     )
     // onModelTransferProgress → onModelTransferComplete → loadModel(...)
@@ -736,14 +737,14 @@ coreAi.unloadModel(apiKey, "gemma-2b", myCallback)
                 code = """// Permanently removes a model file from disk.
 // The service acquires the engine lock before deletion, ensuring the model
 // is fully unloaded from RAM first — preventing file-in-use races (TOCTOU).
-// Result is delivered via onModelTransferComplete or onError on the callback.
+// Result is delivered via onModelStateChanged or onError on the callback.
 coreAi.deleteModel(apiKey, "gemma-2b", myCallback)
 
 // Safe deletion order enforced internally:
 //   1. Acquire engine lock
 //   2. Unload model from RAM (if loaded)
 //   3. Delete file from disk
-//   4. Release engine lock → fires onModelTransferComplete"""
+//   4. Release engine lock → fires onModelStateChanged"""
             )
         }
 
@@ -840,7 +841,7 @@ okHttpClient.newCall(request).execute().use { response ->
     file.outputStream().use { response.body!!.byteStream().copyTo(it) }
 
     // Step 2 — import the saved file into Core AI via FileProvider URI.
-    // "GGUF" is a fully supported engineType alongside "LITERT" and "BIN".
+    // "GGUF" is a fully supported engineType alongside "litertlm" and "bin".
     val uri = FileProvider.getUriForFile(context, "${'$'}{packageName}.provider", file)
     coreAi.importLocalModel(
         apiKey,
@@ -858,10 +859,11 @@ okHttpClient.newCall(request).execute().use { response ->
             Text(
                 text = "Override the automatic prompt template for any model ID. By default Core AI " +
                     "auto-detects the correct chat template from the model name (Llama 3, Gemma, or " +
-                    "ChatML as the generic fallback). Use setCustomChatTemplate to inject a fully " +
-                    "custom template — useful for models not yet in the router or for fine-tuned " +
-                    "variants that use a non-standard format. All eight fields are optional and " +
-                    "default to an empty string when omitted.",
+                    "ChatML as the generic fallback). Catalog IDs gemma-3-1b-q4, gemma-3-4b-q4, " +
+                    "llama-3.2-1b-instruct, and phi-3.5-mini-q4 are resolved by exact ID match first. " +
+                    "Use setCustomChatTemplate to inject a fully custom template — useful for models " +
+                    "not yet in the router or for fine-tuned variants that use a non-standard format. " +
+                    "All eight fields are optional and default to an empty string when omitted.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
