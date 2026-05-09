@@ -15,7 +15,7 @@ interface ModelEngine {
     suspend fun runInference(prompt: String): String
 
     // Default: collect all tokens and emit as a single item. GGUF overrides this.
-    suspend fun runInferenceStream(prompt: String): Flow<String> =
+    suspend fun runInferenceStream(prompt: String, stopSequences: List<String> = emptyList()): Flow<String> =
         flow { emit(runInference(prompt)) }
 
     /**

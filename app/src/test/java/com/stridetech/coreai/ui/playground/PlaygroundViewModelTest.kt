@@ -132,7 +132,10 @@ class PlaygroundViewModelTest {
         verify {
             mockService.runInference(
                 FAKE_MASTER_KEY,
-                match { it.contains("User: Who are you?") && it.contains("Model: I am an AI") }
+                match { prompt ->
+                    prompt.contains("<|im_start|>user\nWho are you?<|im_end|>") &&
+                        prompt.contains("<|im_start|>assistant\nI am an AI<|im_end|>")
+                }
             )
         }
     }
@@ -297,7 +300,7 @@ class PlaygroundViewModelTest {
     // ── Context string format ─────────────────────────────────────────────────
 
     @Test
-    fun `first message sends only user prefix in context`() = runTest(testDispatcher) {
+    fun `first message sends chatml format when no active model`() = runTest(testDispatcher) {
         stubInference("""{"completion":"hi","latency_ms":1,"success":true,"error":null}""")
 
         viewModel.onPromptChange("hello")
@@ -305,7 +308,59 @@ class PlaygroundViewModelTest {
         advanceUntilIdle()
 
         verify {
-            mockService.runInference(any(), match { it == "User: hello" })
+            mockService.runInference(
+                any(),
+                match { it == "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n" }
+            )
+        }
+    }
+
+    @Test
+    fun `llama3 model name triggers chat template format instead of plain text`() = runTest(testDispatcher) {
+        getModelCallback(viewModel).onModelStateChanged(true, "Llama-3.2-1B-Instruct-Q4_K_M")
+        stubInference("""{"completion":"Hello!","latency_ms":1,"success":true,"error":null}""")
+
+        viewModel.onPromptChange("hi")
+        viewModel.runInference()
+        advanceUntilIdle()
+
+        verify {
+            mockService.runInference(
+                FAKE_MASTER_KEY,
+                match { prompt ->
+                    prompt.contains("<|start_header_id|>user<|end_header_id|>") &&
+                        prompt.contains("hi<|eot_id|>") &&
+                        prompt.endsWith("<|start_header_id|>assistant<|end_header_id|>\n\n") &&
+                        !prompt.contains("User:")
+                }
+            )
+        }
+    }
+
+    @Test
+    fun `llama3 multi-turn context wraps every turn in chat template tokens`() = runTest(testDispatcher) {
+        getModelCallback(viewModel).onModelStateChanged(true, "Llama-3.2-1B-Instruct-Q4_K_M")
+        val json1 = """{"completion":"I am an AI","latency_ms":10,"success":true,"error":null}"""
+        val json2 = """{"completion":"Still me","latency_ms":5,"success":true,"error":null}"""
+        stubInferenceSequence(json1, json2)
+
+        viewModel.onPromptChange("Who are you?")
+        viewModel.runInference()
+        advanceUntilIdle()
+
+        viewModel.onPromptChange("Are you sure?")
+        viewModel.runInference()
+        advanceUntilIdle()
+
+        verify {
+            mockService.runInference(
+                FAKE_MASTER_KEY,
+                match { prompt ->
+                    prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nWho are you?<|eot_id|>") &&
+                        prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\nI am an AI<|eot_id|>") &&
+                        prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nAre you sure?<|eot_id|>")
+                }
+            )
         }
     }
 

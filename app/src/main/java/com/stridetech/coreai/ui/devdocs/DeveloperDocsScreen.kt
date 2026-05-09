@@ -315,6 +315,36 @@ gated (access-restricted) models, using the HF Resolve endpoint.
 
 ---
 
+## Step 10 — Custom Chat Templates
+
+Override the automatic prompt template for any model ID. By default Core AI
+auto-detects the correct chat template from the model name (Llama 3, Gemma, or
+ChatML as the generic fallback). Use setCustomChatTemplate to inject a fully
+custom template — useful for models not yet in the router or for fine-tuned
+variants that use a non-standard format. All eight fields are optional and
+default to an empty string when omitted.
+
+  // Template JSON — all fields optional, default to ""
+  {
+    "bosToken":               "<|begin_of_text|>",
+    "systemPromptPrefix":     "<|start_header_id|>system<|end_header_id|>\n\n",
+    "systemPromptSuffix":     "<|eot_id|>",
+    "userMessagePrefix":      "<|start_header_id|>user<|end_header_id|>\n\n",
+    "userMessageSuffix":      "<|eot_id|>",
+    "assistantMessagePrefix": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    "assistantMessageSuffix": "<|eot_id|>",
+    "stopToken":              "<|eot_id|>"
+  }
+
+  // Register — takes effect on the next runInference() call.
+  // modelId must match the id used in loadModel() / setActiveModel().
+  coreAi.setCustomChatTemplate(apiKey, "my-custom-model", templateJson)
+
+  // Revert to auto-detection — pass null or a blank string.
+  coreAi.setCustomChatTemplate(apiKey, "my-custom-model", null)
+
+---
+
 ## API Response Format
 
   { "completion": "...", "latency_ms": 1234, "success": true, "error": null }
@@ -821,6 +851,56 @@ okHttpClient.newCall(request).execute().use { response ->
     )
 }
 // onModelTransferProgress → onModelTransferComplete → call loadModel() to bring into RAM"""
+            )
+        }
+
+        DocStep(number = 10, title = "Custom Chat Templates") {
+            Text(
+                text = "Override the automatic prompt template for any model ID. By default Core AI " +
+                    "auto-detects the correct chat template from the model name (Llama 3, Gemma, or " +
+                    "ChatML as the generic fallback). Use setCustomChatTemplate to inject a fully " +
+                    "custom template — useful for models not yet in the router or for fine-tuned " +
+                    "variants that use a non-standard format. All eight fields are optional and " +
+                    "default to an empty string when omitted.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            CodeSnippetCard(
+                title = "JSON — ChatTemplate structure (all fields optional)",
+                code = """
+{
+  "bosToken":               "<|begin_of_text|>",
+  "systemPromptPrefix":     "<|start_header_id|>system<|end_header_id|>\n\n",
+  "systemPromptSuffix":     "<|eot_id|>",
+  "userMessagePrefix":      "<|start_header_id|>user<|end_header_id|>\n\n",
+  "userMessageSuffix":      "<|eot_id|>",
+  "assistantMessagePrefix": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+  "assistantMessageSuffix": "<|eot_id|>",
+  "stopToken":              "<|eot_id|>"
+}""".trimIndent()
+            )
+            Spacer(Modifier.height(12.dp))
+            CodeSnippetCard(
+                title = "Kotlin — Register and clear a custom template",
+                code = "// Build the JSON string for your template (all fields optional).\n" +
+                    "val templateJson = \"\"\"\n" +
+                    "  {\n" +
+                    "    \"bosToken\": \"<|begin_of_text|>\",\n" +
+                    "    \"userMessagePrefix\": \"<|start_header_id|>user<|end_header_id|>\\n\\n\",\n" +
+                    "    \"userMessageSuffix\": \"<|eot_id|>\",\n" +
+                    "    \"assistantMessagePrefix\": \"<|start_header_id|>assistant<|end_header_id|>\\n\\n\",\n" +
+                    "    \"assistantMessageSuffix\": \"<|eot_id|>\",\n" +
+                    "    \"stopToken\": \"<|eot_id|>\"\n" +
+                    "  }\n" +
+                    "\"\"\".trimIndent()\n" +
+                    "\n" +
+                    "// Register — takes effect on the next runInference() call.\n" +
+                    "// modelId must match the id used in loadModel() / setActiveModel().\n" +
+                    "coreAi.setCustomChatTemplate(apiKey, \"my-custom-model\", templateJson)\n" +
+                    "\n" +
+                    "// Revert to auto-detection — pass null or a blank string.\n" +
+                    "coreAi.setCustomChatTemplate(apiKey, \"my-custom-model\", null)"
             )
         }
 

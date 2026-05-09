@@ -61,10 +61,10 @@ class LlmEngine(private val context: Context) {
         return engine.runInference(prompt)
     }
 
-    suspend fun runInferenceStream(prompt: String): Flow<String> {
+    suspend fun runInferenceStream(prompt: String, stopSequences: List<String> = emptyList()): Flow<String> {
         check(!isShuttingDown.get()) { "Engine is shutting down." }
         val engine = requireNotNull(activeEngine) { "No active model. Load and set a model first." }
-        return engine.runInferenceStream(prompt)
+        return engine.runInferenceStream(prompt, stopSequences)
     }
 
     fun resetContext() {

@@ -102,6 +102,17 @@ interface ICoreAiInterface {
     /** Returns the current context mode ("FULL_PROMPT" or "PER_CLIENT"). */
     String getContextMode(String apiKey);
 
+    /**
+     * Inject a custom chat template for a specific model ID.
+     * Pass a JSON string matching the ChatTemplate schema:
+     *   { "bosToken", "systemPromptPrefix", "systemPromptSuffix",
+     *     "userMessagePrefix", "userMessageSuffix",
+     *     "assistantMessagePrefix", "assistantMessageSuffix", "stopToken" }
+     * Missing fields default to "". Overrides auto-detection for the given modelId.
+     * Pass templateJson="" to clear a previously injected template.
+     */
+    void setCustomChatTemplate(String apiKey, String modelId, String templateJson);
+
     // ── Callback registration ─────────────────────────────────────────────────
 
     void registerCallback(ICoreAiCallback callback);

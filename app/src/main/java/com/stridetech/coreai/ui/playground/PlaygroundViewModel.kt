@@ -12,6 +12,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
+import com.stridetech.coreai.ml.ChatTemplate
+import com.stridetech.coreai.ml.ChatTemplateFormatter
 import com.stridetech.coreai.security.ApiKeyManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -87,7 +89,12 @@ class PlaygroundViewModel @Inject constructor(
 
         override fun onInferenceComplete(latencyMs: Long) {
             pendingOwnInference = false
-            _uiState.update { it.copy(isLoading = false) }
+            _uiState.update { state ->
+                val messages = state.messages.toMutableList()
+                val lastOwn = messages.indexOfLast { it.role == MessageRole.MODEL && it.isOwnResponse }
+                if (lastOwn >= 0) messages[lastOwn] = messages[lastOwn].copy(latencyMs = latencyMs)
+                state.copy(isLoading = false, messages = messages)
+            }
         }
 
         override fun onModelTransferProgress(modelId: String?, percent: Int) {}
@@ -146,7 +153,8 @@ class PlaygroundViewModel @Inject constructor(
         val contextString = if (_uiState.value.contextMode == "PER_CLIENT") {
             prompt
         } else {
-            buildContextString(_uiState.value.messages)
+            val template = ChatTemplateFormatter.templateFor(_uiState.value.activeModelName ?: "")
+            buildContextString(_uiState.value.messages, template)
         }
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -196,12 +204,11 @@ class PlaygroundViewModel @Inject constructor(
         }
     }
 
-    private fun buildContextString(history: List<ChatMessage>): String {
+    private fun buildContextString(history: List<ChatMessage>, template: ChatTemplate): String {
         val window = history
             .filter { it.role != MessageRole.SYSTEM }
             .takeLast(CONTEXT_WINDOW_MESSAGES)
 
-        // Trim further if the tail still exceeds the word budget.
         var wordCount = 0
         val trimmed = window.toMutableList()
         for (i in trimmed.indices.reversed()) {
@@ -212,19 +219,17 @@ class PlaygroundViewModel @Inject constructor(
             }
         }
 
-        // Empty history after a clear — return a blank prompt with no trailing whitespace.
         if (trimmed.isEmpty()) return ""
 
-        // Plain structured text. llamakotlin's generateStream() applies the model's
-        // own chat template from GGUF metadata, so we must NOT inject raw control
-        // tokens here — doing so causes them to leak into the visible response text.
-        return trimmed.joinToString("\n") { msg ->
-            when (msg.role) {
-                MessageRole.USER -> "User: ${msg.content}"
-                MessageRole.MODEL -> "Model: ${msg.content}"
-                MessageRole.SYSTEM -> ""
+        val turns = trimmed.map { msg ->
+            val role = when (msg.role) {
+                MessageRole.USER -> "user"
+                MessageRole.MODEL -> "assistant"
+                MessageRole.SYSTEM -> "system"
             }
+            role to msg.content
         }
+        return template.format(turns)
     }
 
     private fun parseAndApply(json: String) {

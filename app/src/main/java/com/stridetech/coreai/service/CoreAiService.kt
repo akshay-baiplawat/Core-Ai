@@ -12,6 +12,8 @@ import com.google.gson.Gson
 import com.stridetech.coreai.ICoreAiCallback
 import com.stridetech.coreai.ICoreAiInterface
 import com.stridetech.coreai.hub.LocalCatalogDataSource
+import com.stridetech.coreai.ml.ChatTemplate
+import com.stridetech.coreai.ml.ChatTemplateFormatter
 import com.stridetech.coreai.ml.LlmEngine
 import com.stridetech.coreai.security.ApiKeyManager
 import dagger.hilt.android.AndroidEntryPoint
@@ -85,8 +87,13 @@ open class CoreAiService : Service() {
     private val contextMode = AtomicReference(ContextMode.FULL_PROMPT)
 
     // Per-UID session history used only when mode == PER_CLIENT.
-    // Key: Binder.getCallingUid(), Value: mutable turn list ("User: ...\nModel: ...").
-    private val clientSessions = ConcurrentHashMap<Int, MutableList<String>>()
+    // Stored as (role, content) pairs — "user" or "assistant" — so
+    // ChatTemplateFormatter can apply the correct template on each turn.
+    private val clientSessions = ConcurrentHashMap<Int, MutableList<Pair<String, String>>>()
+
+    // Developer-injected chat templates keyed by modelId.
+    // When present, overrides ChatTemplateFormatter auto-detection for that model.
+    private val customTemplates = ConcurrentHashMap<String, ChatTemplate>()
 
     // Resolved once on the main thread in onCreate() to avoid null returns from
     // getExternalFilesDir() when called on Binder pool threads early in the lifecycle.
@@ -271,11 +278,14 @@ open class CoreAiService : Service() {
             }
 
             val callerUid = android.os.Binder.getCallingUid()
+            val activeModelName = engine.activeModelName() ?: ""
+            val template = customTemplates[activeModelName]
+                ?: ChatTemplateFormatter.templateFor(activeModelName)
             val effectivePrompt = when (contextMode.get()) {
                 ContextMode.PER_CLIENT -> {
                     val history = clientSessions.getOrPut(callerUid) { mutableListOf() }
-                    history.add("User: $prompt")
-                    history.joinToString("\n")
+                    history.add("user" to prompt)
+                    template.format(history)
                 }
                 ContextMode.FULL_PROMPT -> prompt
             }
@@ -284,16 +294,17 @@ open class CoreAiService : Service() {
                 val startMs = System.currentTimeMillis()
                 val responseBuilder = StringBuilder()
                 try {
-                    engine.runInferenceStream(effectivePrompt).collect { token ->
+                    engine.runInferenceStream(effectivePrompt, template.effectiveStopSequences).collect { token ->
                         responseBuilder.append(token)
                         broadcastToken(token)
                     }
                     if (contextMode.get() == ContextMode.PER_CLIENT) {
                         val history = clientSessions.getOrPut(callerUid) { mutableListOf() }
-                        history.add("Model: ${responseBuilder.toString().trim()}")
+                        history.add("assistant" to responseBuilder.toString().trim())
                     }
                     val latencyMs = System.currentTimeMillis() - startMs
-                    broadcastInferenceResult(successResponse(responseBuilder.toString(), latencyMs))
+                    // Tokens were already delivered one-by-one via broadcastToken.
+                    // broadcastInferenceResult would add a duplicate message in streaming clients.
                     broadcastInferenceComplete(latencyMs)
                 } catch (ex: Exception) {
                     Log.e(TAG, "Inference failed", ex)
@@ -427,6 +438,19 @@ open class CoreAiService : Service() {
         override fun getContextMode(apiKey: String?): String {
             if (!apiKeyManager.isValidKey(apiKey ?: "")) return ContextMode.FULL_PROMPT.name
             return contextMode.get().name
+        }
+
+        override fun setCustomChatTemplate(apiKey: String?, modelId: String?, templateJson: String?) {
+            if (!apiKeyManager.isValidKey(apiKey ?: "")) return
+            val id = modelId?.takeIf { it.isNotBlank() } ?: return
+            if (templateJson.isNullOrBlank()) {
+                customTemplates.remove(id)
+                Log.i(TAG, "setCustomChatTemplate: cleared template for $id")
+                return
+            }
+            runCatching { ChatTemplate.fromJson(templateJson) }
+                .onSuccess { customTemplates[id] = it; Log.i(TAG, "setCustomChatTemplate: stored template for $id") }
+                .onFailure { Log.w(TAG, "setCustomChatTemplate: invalid JSON for $id — ${it.message}") }
         }
 
         // ── Catalog download ──────────────────────────────────────────────────
