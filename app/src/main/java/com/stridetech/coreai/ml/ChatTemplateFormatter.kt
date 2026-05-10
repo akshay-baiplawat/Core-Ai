@@ -1,0 +1,84 @@
+package com.stridetech.coreai.ml
+
+private val LLAMA3_TEMPLATE = ChatTemplate(
+    bosToken = "<|begin_of_text|>",
+    systemPromptPrefix = "<|start_header_id|>system<|end_header_id|>\n\n",
+    systemPromptSuffix = "<|eot_id|>",
+    userMessagePrefix = "<|start_header_id|>user<|end_header_id|>\n\n",
+    userMessageSuffix = "<|eot_id|>",
+    assistantMessagePrefix = "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    assistantMessageSuffix = "<|eot_id|>",
+    stopToken = "<|eot_id|>",
+    stopSequences = listOf("<|end_of_text|>")
+)
+
+private val GEMMA_TEMPLATE = ChatTemplate(
+    userMessagePrefix = "<start_of_turn>user\n",
+    userMessageSuffix = "<end_of_turn>\n",
+    assistantMessagePrefix = "<start_of_turn>model\n",
+    assistantMessageSuffix = "<end_of_turn>\n",
+    stopToken = "<end_of_turn>"
+)
+
+private val CHATML_TEMPLATE = ChatTemplate(
+    systemPromptPrefix = "<|im_start|>system\n",
+    systemPromptSuffix = "<|im_end|>\n",
+    userMessagePrefix = "<|im_start|>user\n",
+    userMessageSuffix = "<|im_end|>\n",
+    assistantMessagePrefix = "<|im_start|>assistant\n",
+    assistantMessageSuffix = "<|im_end|>\n",
+    stopToken = "<|im_end|>"
+)
+
+// Explicit catalog ID → template assignments. Checked first — overrides everything.
+private val CATALOG_TEMPLATES: Map<String, ChatTemplate> = mapOf(
+    "gemma-3-1b-q4"         to GEMMA_TEMPLATE,
+    "gemma-3-4b-q4"         to GEMMA_TEMPLATE,
+    "llama-3.2-1b-instruct" to LLAMA3_TEMPLATE,
+    "phi-3.5-mini-q4"       to CHATML_TEMPLATE,
+)
+
+// GGUF `general.architecture` field → template. More reliable than filename heuristics
+// because the value is embedded in the model file itself.
+private val ARCHITECTURE_TEMPLATES: Map<String, ChatTemplate> = mapOf(
+    "llama"   to LLAMA3_TEMPLATE,
+    "gemma"   to GEMMA_TEMPLATE,
+    "gemma3"  to GEMMA_TEMPLATE,
+    "phi2"    to CHATML_TEMPLATE,
+    "phi3"    to CHATML_TEMPLATE,
+    "qwen2"   to CHATML_TEMPLATE,
+    "qwen3"   to CHATML_TEMPLATE,
+    "mistral" to CHATML_TEMPLATE,
+    "falcon"  to CHATML_TEMPLATE,
+)
+
+internal object ChatTemplateFormatter {
+
+    fun isLlama3(modelName: String): Boolean =
+        modelName.contains("llama", ignoreCase = true)
+
+    fun isGemma(modelName: String): Boolean =
+        modelName.contains("gemma", ignoreCase = true)
+
+    /**
+     * Resolves the best template using three tiers in priority order:
+     * 1. Explicit [CATALOG_TEMPLATES] entry by [modelName]
+     * 2. GGUF [architecture] string from file metadata (e.g. "llama", "gemma3", "qwen2")
+     * 3. Name-based heuristics — fallback when architecture is unavailable
+     */
+    fun templateFor(modelName: String, architecture: String? = null): ChatTemplate =
+        CATALOG_TEMPLATES[modelName]
+            ?: architecture?.let { ARCHITECTURE_TEMPLATES[it.lowercase()] }
+            ?: when {
+                isLlama3(modelName) -> LLAMA3_TEMPLATE
+                isGemma(modelName)  -> GEMMA_TEMPLATE
+                else                -> CHATML_TEMPLATE
+            }
+
+    // Backward-compat delegators — existing call sites require no changes.
+    fun stopSequences(modelName: String): List<String> =
+        templateFor(modelName).effectiveStopSequences
+
+    fun format(turns: List<Pair<String, String>>, modelName: String): String =
+        templateFor(modelName).format(turns)
+}
