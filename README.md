@@ -340,4 +340,4 @@ The host app ships a live integration guide under **Settings → Developer Docs*
 
 ## License
 
-Copyright © 2026 StrideTech. All rights reserved.
+Copyright © 2026 Akshay Baiplawat & © 2026 StrideTech. All rights reserved.
