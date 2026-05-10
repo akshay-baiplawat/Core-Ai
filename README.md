@@ -6,6 +6,74 @@ Core AI is a background Android service that runs large language model inference
 
 ---
 
+## Download
+
+<div align="center">
+
+### Core AI (Host App)
+
+📥 **[Download Core AI APK](https://github.com/akshay-baiplawat/Core-Ai/releases/download/CoreAI/CoreAI)**
+
+**Min Android Version:** 12 (API 31) | **Size:** ~46 MB
+
+[![Download Core AI](https://img.shields.io/badge/Download-Core_AI-brightgreen?style=for-the-badge&logo=android)](https://github.com/akshay-baiplawat/Core-Ai/releases/download/CoreAI/CoreAI)
+
+---
+
+### Core AI Client (Sample Client App)
+
+📥 **[Download Core AI Client APK](https://github.com/akshay-baiplawat/Core-Ai-Client/releases/download/CoreAIClient/CoreAiClient.apk)**
+
+**Min Android Version:** 12 (API 31) | **Size:** ~20 MB
+
+[![Download Core AI Client](https://img.shields.io/badge/Download-Core_AI_Client-blue?style=for-the-badge&logo=android)](https://github.com/akshay-baiplawat/Core-Ai-Client/releases/download/CoreAIClient/CoreAiClient.apk)
+
+</div>
+
+---
+
+## Core AI Client
+
+> **GitHub:** [akshay-baiplawat/Core-Ai-Client](https://github.com/akshay-baiplawat/Core-Ai-Client)
+
+The **Core AI Client** is a reference Android app and test harness for the Core AI service. It connects to `CoreAiService` over AIDL, exposes every service API through a sectioned UI, and streams all responses to an in-app console log — making it the fastest way to verify a Core AI installation, test a newly downloaded model, or prototype an integration without writing any boilerplate.
+
+### What it does
+
+| Zone | Feature |
+| --- | --- |
+| 1 — Connection | Bind / unbind to the Core AI service with an API key |
+| 2 — Engine Status | Query active model, downloaded models, loaded models, catalog; validate API key |
+| 3 — Model Acquisition | Download a model by ID + URL (defaults to `gemma-3-1b-it-Q4_K_M.gguf`) |
+| 4 — RAM & Disk Lifecycle | Load / unload / delete a model; promote a model to the active inference slot |
+| 5 — Inference | Run a prompt against the active model; streams tokens live |
+| 6 — Context & Session | Switch between `FULL_PROMPT` / `PER_CLIENT` context modes; reset chat history |
+| 7 — Custom Chat Template | Inject or clear a JSON chat template override for any model |
+| Console Log | Scrollable, selectable, timestamped log of every AIDL call and callback |
+
+### When to use it
+
+- **Verifying a new Core AI install** — bind, load a model, run a prompt in Zone 5, confirm the response.
+- **Testing model downloads** — paste any HTTPS GGUF URL into Zone 3 and watch the download progress live.
+- **Debugging your own integration** — use the console log as a reference for what each AIDL call returns.
+- **Exploring context modes** — toggle Zone 6 between `PER_CLIENT` and `FULL_PROMPT` to see how history affects completions.
+- **Custom chat templates** — validate a JSON template override in Zone 7 before wiring it into your production app.
+
+### Quick start
+
+```bash
+git clone https://github.com/akshay-baiplawat/Core-Ai-Client.git
+# Open in Android Studio, sync Gradle, run on a device with Core AI installed
+```
+
+1. Enter your **API Key** in Zone 1.
+2. Tap **Bind** — the status chip turns green when connected.
+3. Use any zone to exercise the service.
+
+> Core AI must be installed on the same device. The API key is issued by the Core AI host app under **Settings → API Keys**.
+
+---
+
 ## Key Features
 
 ### Headless AI Platform
