@@ -74,13 +74,15 @@ The package declaration inside each file must match exactly: package com.stridet
 
 ## Step 2 — Declare Manifest Requirements
 
-Add a <queries> block so Android allows your app to discover the Core AI service,
-and declare the FOREGROUND_SERVICE permission required for IPC binding.
+Add a <queries> block so Android allows your app to discover the Core AI service.
+Declare the BIND_LLM_SERVICE permission to bind to the service (normal protection
+level — any app can declare this), and optionally FOREGROUND_SERVICE for foreground use.
 
   <manifest ...>
       <queries>
           <package android:name="com.stridetech.coreai" />
       </queries>
+      <uses-permission android:name="com.stridetech.coreai.permission.BIND_LLM_SERVICE" />
       <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
       <application ...>
           ...
@@ -318,11 +320,15 @@ gated (access-restricted) models, using the HF Resolve endpoint.
 ## Step 10 — Custom Chat Templates
 
 Override the automatic prompt template for any model ID. By default Core AI
-auto-detects the correct chat template from the model name (Llama 3, Gemma, or
-ChatML as the generic fallback). Catalog IDs gemma-3-1b-q4, gemma-3-4b-q4,
-llama-3.2-1b-instruct, and phi-3.5-mini-q4 are resolved by exact ID match first.
-Use setCustomChatTemplate to inject a fully custom template — useful for models
-not yet in the router or for fine-tuned variants that use a non-standard format.
+auto-detects the correct chat template using three tiers in priority order:
+  1. Exact catalog ID match (gemma-3-1b-q4, gemma-3-4b-q4, llama-3.2-1b-instruct, phi-3.5-mini-q4)
+  2. GGUF general.architecture field read from the file header without loading the model
+     (e.g. llama → Llama 3 tokens; gemma/gemma3 → Gemma tokens;
+      phi3/qwen2/qwen3/mistral/falcon → ChatML)
+  3. Name heuristics — fallback when metadata is unavailable (contains "llama" → Llama 3,
+     contains "gemma" → Gemma, anything else → ChatML)
+Use setCustomChatTemplate to inject a fully custom template — useful for models not yet in the
+router or for fine-tuned variants that use a non-standard format.
 All eight fields are optional and default to an empty string when omitted.
 
   // Template JSON — all fields optional, default to ""
@@ -428,8 +434,10 @@ src/main/aidl/com/stridetech/coreai/ICoreAiCallback.aidl"""
 
         DocStep(number = 2, title = "Declare Manifest Requirements") {
             Text(
-                text = "Add a <queries> block so Android allows your app to discover the Core AI service, " +
-                    "and declare the FOREGROUND_SERVICE permission required for IPC binding.",
+                text = "Add a <queries> block so Android allows your app to discover the Core AI " +
+                    "service. Declare the BIND_LLM_SERVICE permission to bind to the service — " +
+                    "it uses normal protection level so any app can declare it. FOREGROUND_SERVICE " +
+                    "is optional and only needed if you run inference from a foreground service.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -443,6 +451,12 @@ src/main/aidl/com/stridetech/coreai/ICoreAiCallback.aidl"""
         <package android:name="com.stridetech.coreai" />
     </queries>
 
+    <!-- Required to bind to CoreAiService -->
+    <!-- protectionLevel="normal" — any app can declare this permission -->
+    <uses-permission
+        android:name="com.stridetech.coreai.permission.BIND_LLM_SERVICE" />
+
+    <!-- Optional: only needed for foreground service inference -->
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE" />
 
@@ -857,10 +871,13 @@ okHttpClient.newCall(request).execute().use { response ->
 
         DocStep(number = 10, title = "Custom Chat Templates") {
             Text(
-                text = "Override the automatic prompt template for any model ID. By default Core AI " +
-                    "auto-detects the correct chat template from the model name (Llama 3, Gemma, or " +
-                    "ChatML as the generic fallback). Catalog IDs gemma-3-1b-q4, gemma-3-4b-q4, " +
-                    "llama-3.2-1b-instruct, and phi-3.5-mini-q4 are resolved by exact ID match first. " +
+                text = "Override the automatic prompt template for any model ID. Core AI resolves " +
+                    "templates using three tiers: (1) exact catalog ID match (gemma-3-1b-q4, " +
+                    "gemma-3-4b-q4, llama-3.2-1b-instruct, phi-3.5-mini-q4); (2) GGUF " +
+                    "general.architecture field read from the file header without loading the model " +
+                    "(llama, gemma3, phi3, qwen2, mistral, falcon → appropriate template); " +
+                    "(3) name heuristics as a final fallback (contains \"llama\" → Llama 3, " +
+                    "contains \"gemma\" → Gemma, anything else → ChatML). " +
                     "Use setCustomChatTemplate to inject a fully custom template — useful for models " +
                     "not yet in the router or for fine-tuned variants that use a non-standard format. " +
                     "All eight fields are optional and default to an empty string when omitted.",

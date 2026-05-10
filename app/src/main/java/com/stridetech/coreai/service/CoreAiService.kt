@@ -58,6 +58,16 @@ private const val FALLBACK_LOADED_JSON = """{"models":[],"error":"Internal error
  *     fails fast and surfaces contention to the caller via [ICoreAiCallback.onError].
  *   - Context isolation mode (FULL_PROMPT / PER_CLIENT) is stored in an [AtomicReference]
  *     and can be changed at runtime without acquiring the engine lock.
+ *
+ * Chat template resolution (four tiers, highest priority first):
+ *   1. Developer-injected template via setCustomChatTemplate — stored in [customTemplates],
+ *      keyed by modelId; cleared by passing a blank templateJson.
+ *   2. Explicit catalog ID lookup in ChatTemplateFormatter
+ *      (gemma-3-1b-q4, gemma-3-4b-q4, llama-3.2-1b-instruct, phi-3.5-mini-q4).
+ *   3. GGUF [general.architecture] field read from the file header by GgufMetadataReader —
+ *      maps architecture strings (llama, gemma3, phi3, qwen2, mistral, falcon, …) to the
+ *      correct template without loading the model into RAM.
+ *   4. Name-based heuristics as a final fallback (contains "llama" / "gemma" / else ChatML).
  */
 @AndroidEntryPoint
 open class CoreAiService : Service() {

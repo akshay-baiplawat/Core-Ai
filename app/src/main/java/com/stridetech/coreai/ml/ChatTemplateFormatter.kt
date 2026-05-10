@@ -30,13 +30,26 @@ private val CHATML_TEMPLATE = ChatTemplate(
     stopToken = "<|im_end|>"
 )
 
-// Explicit catalog ID → template assignments. Checked before name heuristics so non-descriptive
-// or future catalog IDs always get the correct template regardless of naming convention.
+// Explicit catalog ID → template assignments. Checked first — overrides everything.
 private val CATALOG_TEMPLATES: Map<String, ChatTemplate> = mapOf(
     "gemma-3-1b-q4"         to GEMMA_TEMPLATE,
     "gemma-3-4b-q4"         to GEMMA_TEMPLATE,
     "llama-3.2-1b-instruct" to LLAMA3_TEMPLATE,
     "phi-3.5-mini-q4"       to CHATML_TEMPLATE,
+)
+
+// GGUF `general.architecture` field → template. More reliable than filename heuristics
+// because the value is embedded in the model file itself.
+private val ARCHITECTURE_TEMPLATES: Map<String, ChatTemplate> = mapOf(
+    "llama"   to LLAMA3_TEMPLATE,
+    "gemma"   to GEMMA_TEMPLATE,
+    "gemma3"  to GEMMA_TEMPLATE,
+    "phi2"    to CHATML_TEMPLATE,
+    "phi3"    to CHATML_TEMPLATE,
+    "qwen2"   to CHATML_TEMPLATE,
+    "qwen3"   to CHATML_TEMPLATE,
+    "mistral" to CHATML_TEMPLATE,
+    "falcon"  to CHATML_TEMPLATE,
 )
 
 internal object ChatTemplateFormatter {
@@ -47,12 +60,20 @@ internal object ChatTemplateFormatter {
     fun isGemma(modelName: String): Boolean =
         modelName.contains("gemma", ignoreCase = true)
 
-    fun templateFor(modelName: String): ChatTemplate =
-        CATALOG_TEMPLATES[modelName] ?: when {
-            isLlama3(modelName) -> LLAMA3_TEMPLATE
-            isGemma(modelName) -> GEMMA_TEMPLATE
-            else -> CHATML_TEMPLATE
-        }
+    /**
+     * Resolves the best template using three tiers in priority order:
+     * 1. Explicit [CATALOG_TEMPLATES] entry by [modelName]
+     * 2. GGUF [architecture] string from file metadata (e.g. "llama", "gemma3", "qwen2")
+     * 3. Name-based heuristics — fallback when architecture is unavailable
+     */
+    fun templateFor(modelName: String, architecture: String? = null): ChatTemplate =
+        CATALOG_TEMPLATES[modelName]
+            ?: architecture?.let { ARCHITECTURE_TEMPLATES[it.lowercase()] }
+            ?: when {
+                isLlama3(modelName) -> LLAMA3_TEMPLATE
+                isGemma(modelName)  -> GEMMA_TEMPLATE
+                else                -> CHATML_TEMPLATE
+            }
 
     // Backward-compat delegators — existing call sites require no changes.
     fun stopSequences(modelName: String): List<String> =

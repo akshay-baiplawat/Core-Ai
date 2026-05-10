@@ -14,7 +14,13 @@ interface ICoreAiInterface {
      */
     String runInference(String apiKey, String prompt);
 
+    /** Returns true when a model is loaded and the engine is ready to accept inference. */
     boolean isReady();
+
+    /**
+     * Returns true if the API key is recognised by ApiKeyManager, false otherwise.
+     * Call this on startup or before the first inference to surface key problems early.
+     */
     boolean validateApiKey(String apiKey);
 
     // ── Model lifecycle ───────────────────────────────────────────────────────
@@ -30,6 +36,7 @@ interface ICoreAiInterface {
 
     /**
      * Unload a model from memory by ID.
+     * modelId must not be blank — pass the exact id used in loadModel().
      * Result delivered via onModelStateChanged or onError on the supplied callback.
      */
     void unloadModel(String apiKey, String modelId, ICoreAiCallback callback);
@@ -115,7 +122,17 @@ interface ICoreAiInterface {
 
     // ── Callback registration ─────────────────────────────────────────────────
 
+    /**
+     * Register a callback to receive async events (model state, inference results, transfer
+     * progress). Registering also clears any stale KV cache from a previous session so the
+     * first inference starts from a clean context. Safe to call multiple times.
+     */
     void registerCallback(ICoreAiCallback callback);
+
+    /**
+     * Unregister a previously registered callback. Always call this before unbinding
+     * to avoid Binder leaks and spurious callbacks after the client disconnects.
+     */
     void unregisterCallback(ICoreAiCallback callback);
 
     /**

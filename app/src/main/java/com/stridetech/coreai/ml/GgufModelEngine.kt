@@ -3,23 +3,32 @@ package com.stridetech.coreai.ml
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 
 private const val TAG = "GgufModelEngine"
-private const val DEFAULT_CONTEXT_SIZE = 4096
+private const val DEFAULT_CONTEXT_SIZE = 8192
 private const val DEFAULT_THREAD_COUNT = 4
 private const val DEFAULT_GPU_LAYERS = 0
 
 class GgufModelEngine : ModelEngine {
 
+    // Single-threaded dispatcher for all JNI calls. llama.cpp's global C++ state (model,
+    // context, sampler) is not thread-safe; this guarantees every native call runs on the
+    // same dedicated thread regardless of which coroutine invokes it.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val llamaDispatcher = Dispatchers.IO.limitedParallelism(1)
+
     @Volatile private var llamaModel: LlamaModel? = null
     @Volatile private var modelName: String? = null
     @Volatile private var modelPath: String? = null
+    @Volatile private var resolvedTemplate: ChatTemplate? = null
     @Volatile override var lastLoadError: String? = null
 
     override val isReady: Boolean get() = llamaModel != null
@@ -27,7 +36,7 @@ class GgufModelEngine : ModelEngine {
     override fun activeModelName(): String? = modelName
 
     override suspend fun load(modelPath: String, backend: Backend) {
-        withContext(Dispatchers.IO) {
+        withContext(llamaDispatcher) {
             lastLoadError = null
             close()
             Log.d(TAG, "Attempting to load model at path: $modelPath")
@@ -47,6 +56,9 @@ class GgufModelEngine : ModelEngine {
             }
             Log.d(TAG, "File check OK — size=${file.length()} bytes, path=$modelPath")
 
+            val architecture = GgufMetadataReader.readArchitecture(file)
+            Log.d(TAG, "GGUF architecture: ${architecture ?: "(not detected)"}")
+
             runCatching {
                 LlamaModel.load(modelPath) {
                     contextSize = DEFAULT_CONTEXT_SIZE
@@ -56,8 +68,10 @@ class GgufModelEngine : ModelEngine {
             }.onSuccess { model ->
                 llamaModel = model
                 this@GgufModelEngine.modelPath = modelPath
-                modelName = modelPath.substringAfterLast('/').substringBeforeLast('.')
-                Log.i(TAG, "Loaded OK: $modelName")
+                val name = modelPath.substringAfterLast('/').substringBeforeLast('.')
+                modelName = name
+                resolvedTemplate = ChatTemplateFormatter.templateFor(name, architecture)
+                Log.i(TAG, "Loaded OK: $name (arch=$architecture)")
             }.onFailure { ex ->
                 val rawMsg = ex.message ?: "(no message)"
                 val userMsg = if (rawMsg.contains("Failed to load model from")) {
@@ -76,8 +90,9 @@ class GgufModelEngine : ModelEngine {
 
     override suspend fun runInferenceStream(prompt: String, stopSequences: List<String>): Flow<String> {
         val model = checkNotNull(llamaModel) { "Engine not loaded. Call load() first." }
-        val stopSeqs = stopSequences.ifEmpty { ChatTemplateFormatter.stopSequences(modelName ?: "") }
-        val rawStream = model.generateStream(prompt)
+        val template = resolvedTemplate ?: ChatTemplateFormatter.templateFor(modelName ?: "")
+        val stopSeqs = stopSequences.ifEmpty { template.effectiveStopSequences }
+        val rawStream = model.generateStream(prompt).flowOn(llamaDispatcher)
         return if (stopSeqs.isEmpty()) rawStream else truncateAtStop(rawStream, stopSeqs)
     }
 
@@ -125,10 +140,11 @@ class GgufModelEngine : ModelEngine {
             return
         }
         val name = modelName
+        val template = resolvedTemplate
         llamaModel?.close()
         llamaModel = null
         Log.i(TAG, "Native KV cache cleared for $name — reloading from $path")
-        runBlocking(Dispatchers.IO) {
+        runBlocking(llamaDispatcher) {
             runCatching {
                 LlamaModel.load(path) {
                     contextSize = DEFAULT_CONTEXT_SIZE
@@ -138,6 +154,7 @@ class GgufModelEngine : ModelEngine {
             }.onSuccess { model ->
                 llamaModel = model
                 modelName = name
+                resolvedTemplate = template
                 Log.i(TAG, "Reload after resetContext OK: $modelName")
             }.onFailure { ex ->
                 lastLoadError = ex.message
@@ -151,5 +168,6 @@ class GgufModelEngine : ModelEngine {
         llamaModel = null
         modelName = null
         modelPath = null
+        resolvedTemplate = null
     }
 }

@@ -4,7 +4,7 @@
 
     <permission
         android:name="com.stridetech.coreai.permission.BIND_LLM_SERVICE"
-        android:protectionLevel="signature" />
+        android:protectionLevel="normal" />
 
     <uses-permission android:name="com.stridetech.coreai.permission.BIND_LLM_SERVICE" />
     <uses-permission android:name="android.permission.INTERNET" />
