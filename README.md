@@ -28,9 +28,15 @@ On supported hardware Core AI attempts GPU acceleration (Qualcomm GpuArtisan). I
 
 Every client identity is a UUID v4 key stored in `EncryptedSharedPreferences` (AES-256 GCM). Every AIDL call validates the key before execution. Keys carry a last-used timestamp and can be revoked at runtime.
 
+The service binding permission (`com.stridetech.coreai.permission.BIND_LLM_SERVICE`) uses `protectionLevel="normal"` — any installed app can declare it and bind to the service. The API key is the sole runtime access gate.
+
 ### In-App Model Hub
 
 The host app includes a browsable model catalog, one-tap downloads with progress reporting (0–100 %), and a local file importer that accepts GGUF, LiteRT, and BIN formats via the Android Storage Access Framework. Downloads are written to a `.tmp` file and renamed atomically on success — a partial download never pollutes the model directory.
+
+### GGUF Architecture Auto-Detection
+
+For GGUF models, Core AI reads the `general.architecture` field directly from the file header (without loading the model into RAM) to select the correct chat template. This guarantees accurate prompt formatting even for models with opaque filenames. Supported architectures: `llama`, `gemma`, `gemma3`, `phi2`, `phi3`, `qwen2`, `qwen3`, `mistral`, `falcon`.
 
 ---
 
@@ -93,12 +99,16 @@ app/src/main/aidl/com/stridetech/coreai/
 
 The package declaration in each file must remain `com.stridetech.coreai`.
 
-### 2. Declare queries in your AndroidManifest.xml
+### 2. Declare queries and permissions in your AndroidManifest.xml
 
 ```xml
+<!-- Allow your app to discover and bind to the Core AI service -->
 <queries>
     <package android:name="com.stridetech.coreai" />
 </queries>
+
+<!-- Required to bind to CoreAiService (normal protection level — any app can declare this) -->
+<uses-permission android:name="com.stridetech.coreai.permission.BIND_LLM_SERVICE" />
 ```
 
 If you intend to run inference in the foreground, also add:
@@ -221,10 +231,11 @@ coreAi?.resetChatContext(apiKey, modelId)
 
 ### 8. Custom Chat Templates
 
-By default Core AI auto-detects the correct prompt format from the model name. Catalog model IDs
-(`gemma-3-1b-q4`, `gemma-3-4b-q4`, `llama-3.2-1b-instruct`, `phi-3.5-mini-q4`) are resolved by
-exact ID match first; other names fall back to keyword heuristics (contains `"llama"` → Llama 3
-tokens, contains `"gemma"` → Gemma tokens, anything else → ChatML).
+By default Core AI auto-detects the correct prompt format using three tiers in priority order:
+
+1. **Exact catalog ID match** — `gemma-3-1b-q4`, `gemma-3-4b-q4`, `llama-3.2-1b-instruct`, `phi-3.5-mini-q4`
+2. **GGUF `general.architecture`** — for `.gguf` files the service reads the architecture field from the file header without loading the model (e.g. `llama` → Llama 3 tokens, `gemma3` → Gemma tokens, `phi3`/`qwen2`/`mistral`/`falcon` → ChatML)
+3. **Name heuristics** — fallback when metadata is unavailable (contains `"llama"` → Llama 3 tokens, contains `"gemma"` → Gemma tokens, anything else → ChatML)
 
 Use `setCustomChatTemplate` to override for a specific model ID — useful for fine-tuned variants or
 models not yet in the built-in router.
@@ -323,7 +334,7 @@ context.unbindService(connection)
 
 ## In-App Developer Docs
 
-The host app ships a live integration guide under **Settings → Developer Docs**. It mirrors this README with interactive, copyable code snippets and covers all seven integration steps. Open it on any device running Core AI.
+The host app ships a live integration guide under **Settings → Developer Docs**. It mirrors this README with interactive, copyable code snippets and covers all ten integration steps. Open it on any device running Core AI.
 
 ---
 
